@@ -1,6 +1,8 @@
 #ifndef UNICODE
 #define UNICODE
-#endif 
+#endif
+
+#pragma comment(lib, "Comctl32.lib")
 
 #define MainName L"Task Manager"
 #define SCREEN_WIDTH  GetSystemMetrics(SM_CXSCREEN)
@@ -12,12 +14,11 @@
 #define ID_MENU_EXIT 0x2012
 #define ID_MENU_ABOUT 0x2013
 #define IDC_TABCONTROL 0x3010
+#define IDC_LISTVIEW_PROCESSES 0x4010
 
 #include <Windows.h>
 #include <iomanip>
-#include <sstream>
 #include <CommCtrl.h>
-#include <windowsx.h>
 #include <wingdi.h>
 #include <string>
 #include "resource.h"
@@ -51,9 +52,73 @@ void AddTabItems(HWND hTab) {
     TabCtrl_InsertItem(hTab, 2, &tie);
 }
 
+HWND CreateProcessListView(HWND hParent) {
+    HWND hListView = CreateWindowEx(0, WC_LISTVIEW, NULL,
+        WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
+        10, 40, SCREEN_WIDTH - 40, SCREEN_HEIGHT - 200,
+        hParent, (HMENU)IDC_LISTVIEW_PROCESSES, (HINSTANCE)GetWindowLongPtr(hParent, GWLP_HINSTANCE), NULL);
+
+    LVCOLUMN lvColumn;
+    
+    HIMAGELIST hImageList = ImageList_Create(16, 16, ILC_COLOR32 | ILC_MASK, 1, 1);
+    ImageList_SetBkColor(hImageList, CLR_NONE);
+    
+    HICON hIcon = LoadIcon((HINSTANCE)GetWindowLongPtr(hParent, GWLP_HINSTANCE), MAKEINTRESOURCE(IDI_MAINICON));  // Пример: загрузка системной иконки
+    ImageList_AddIcon(hImageList, hIcon);
+    DestroyIcon(hIcon);
+    ListView_SetImageList(hListView, hImageList, LVSIL_SMALL);
+
+    const std::wstring columnHeaders[] = {
+        L"Имя процесса", L"ID процесса", L"Состояние", L"Приоритет",
+        L"Загрузка ЦП", L"Загрузка Памяти", L"Время создания", L"Путь к файлу", L"Битность"
+    };
+    int columnWidths[] = { 200, 150, 150, 150, 150, 190, 180, 250, 80 };
+
+    for (int i = 0; i < 9; i++) {
+        lvColumn.mask = (i == 0) 
+                        ? LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM | LVCF_FMT | LVCF_IMAGE
+                        : LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM | LVCF_FMT;
+        
+        lvColumn.fmt = LVCFMT_CENTER;
+        lvColumn.pszText = (LPWSTR)columnHeaders[i].c_str();
+        lvColumn.cx = columnWidths[i];
+        lvColumn.iImage = 0;
+        
+        ListView_InsertColumn(hListView, i, &lvColumn);
+    }
+
+    return hListView;
+}
+
+WNDPROC oldListViewProcessesProc;
+
+LRESULT CALLBACK ListViewProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    switch (uMsg)
+    {
+        case WM_NOTIFY:
+        {
+             LPNMHDR pnmh = (LPNMHDR)lParam;
+             if (pnmh->code == HDN_ITEMCHANGING)
+             {
+                 LPNMHEADER pnmhHeader = (LPNMHEADER)lParam;
+
+                 if (pnmhHeader->pitem->cxy < 30)
+                 {
+                     pnmhHeader->pitem->cxy = 30;
+                 }
+             }   
+        }
+        break;
+
+        default:
+            return CallWindowProc(oldListViewProcessesProc, hWnd, uMsg, wParam, lParam);
+    }
+    return CallWindowProc(oldListViewProcessesProc, hWnd, uMsg, wParam, lParam);
+}
+
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
-    static HWND hFontButton, hTabControl;
+    static HWND hFontButton, hTabControl, hListViewProcesses;
 
     switch (uMsg)
     {
@@ -80,6 +145,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
             AddTabItems(hTabControl);
             SetMenu(hwnd, CreateAppMenu());
+
+            hListViewProcesses = CreateProcessListView(hTabControl);
+            oldListViewProcessesProc = (WNDPROC)SetWindowLongPtr(hListViewProcesses, GWLP_WNDPROC, (LONG_PTR)ListViewProc);    
         }
         break;
 
@@ -118,6 +186,16 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             }*/
         }
         break;
+
+        case WM_NOTIFY:
+            {
+                NMHDR* nmhdr = (NMHDR*)lParam;
+                if (nmhdr->idFrom == IDC_TABCONTROL && nmhdr->code == TCN_SELCHANGE) {
+                    int tabIndex = TabCtrl_GetCurSel(hTabControl);
+                    ShowWindow(hListViewProcesses, tabIndex == 0 ? SW_SHOW : SW_HIDE);
+                }
+            }
+            break;
 
         case WM_COMMAND:
         {
