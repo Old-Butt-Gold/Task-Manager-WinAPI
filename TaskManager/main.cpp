@@ -30,8 +30,7 @@
 #include <Psapi.h>    // For process memory information
 #include <shellapi.h>
 #include <map>
-#include <vector>
-#include <algorithm>
+#include <sstream>
 
 #include "info.h"
 
@@ -85,49 +84,6 @@ void HandleContextMenu(HWND hwnd, WPARAM wParam, LPARAM lParam) {
     HMENU hMenu = CreateContextMenu();
     TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, NULL);
     DestroyMenu(hMenu);
-}
-
-HWND CreateProcessListView(HWND hParent) {
-    HWND hListView = CreateWindowEx(0, WC_LISTVIEW, NULL,
-        WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
-        ProcessListViewX, ProcessListViewY, SCREEN_WIDTH - 40, SCREEN_HEIGHT - 100,
-        hParent, (HMENU)IDC_LISTVIEW_PROCESSES, (HINSTANCE)GetWindowLongPtr(hParent, GWLP_HINSTANCE), NULL);
-
-    LVCOLUMN lvColumn;
-    
-    HIMAGELIST hImageList = ImageList_Create(16, 16, ILC_COLOR32 | ILC_MASK, 1, 1);
-    ImageList_SetBkColor(hImageList, CLR_NONE);
-    
-    HICON hIcon = LoadIcon((HINSTANCE)GetWindowLongPtr(hParent, GWLP_HINSTANCE), MAKEINTRESOURCE(IDI_MAINICON));
-    ImageList_AddIcon(hImageList, LoadIcon(NULL, IDI_WINLOGO));
-    ImageList_AddIcon(hImageList, hIcon);
-    
-    DestroyIcon(hIcon);
-    ListView_SetImageList(hListView, hImageList, LVSIL_SMALL);
-    ListView_SetExtendedListViewStyle(hListView, LVS_EX_FULLROWSELECT| LVS_EX_HEADERDRAGDROP);
-
-    const std::wstring columnHeaders[] = {
-        L"Имя процесса", L"ID процесса", L"ID родительского процесса", L"Приоритет",
-        L"Загрузка ЦП", L"Загрузка Памяти", L"Время создания", L"Путь к файлу", L"Битность"
-    };
-    int columnWidths[] = { 200, 150, 150, 150, 150, 190, 180, 240, 80 };
-
-    for (int i = 0; i < 9; i++) {
-        lvColumn.mask = (i == 0) 
-                        ? LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM | LVCF_FMT | LVCF_IMAGE
-                        : LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM | LVCF_FMT;
-        
-        lvColumn.fmt = LVCFMT_CENTER;
-        lvColumn.cchTextMax = MAX_PATH;
-        lvColumn.pszText = (LPWSTR)columnHeaders[i].c_str();
-        lvColumn.cx = columnWidths[i];
-        lvColumn.iImage = 1;
-        lvColumn.iSubItem = i;
-        
-        ListView_InsertColumn(hListView, i, &lvColumn);
-    }
-
-    return hListView;
 }
 
 WNDPROC oldListViewProcessesProc;
@@ -325,6 +281,97 @@ std::wstring GetProcessTimeCreation(DWORD processId)
     return L"";
 }
 
+std::wstring FormatFloat(int precision, double value) {
+    std::wstringstream stream;
+    stream.precision(precision);
+    stream << std::fixed << value << L" MB";
+    return stream.str();
+}
+
+std::wstring GetMemoryUsage(HANDLE hProcess) {
+    PROCESS_MEMORY_COUNTERS_EX pmc;
+    if (GetProcessMemoryInfo(hProcess, (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc))) {
+
+        double memoryUsageMB = pmc.WorkingSetSize / (1024.0 * 1024.0);
+        return FormatFloat(3, memoryUsageMB);
+    }
+    return L"N/A";
+}
+
+HWND CreateProcessListView(HWND hParent) {
+    HWND hListView = CreateWindowEx(0, WC_LISTVIEW, NULL,
+        WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
+        ProcessListViewX, ProcessListViewY, SCREEN_WIDTH - 40, SCREEN_HEIGHT - 100,
+        hParent, (HMENU)IDC_LISTVIEW_PROCESSES, (HINSTANCE)GetWindowLongPtr(hParent, GWLP_HINSTANCE), NULL);
+
+    LVCOLUMN lvColumn;
+    
+    HIMAGELIST hImageList = ImageList_Create(16, 16, ILC_COLOR32 | ILC_MASK, 1, 1);
+    ImageList_SetBkColor(hImageList, CLR_NONE);
+    
+    HICON hIcon = LoadIcon((HINSTANCE)GetWindowLongPtr(hParent, GWLP_HINSTANCE), MAKEINTRESOURCE(IDI_MAINICON));
+    ImageList_AddIcon(hImageList, LoadIcon(NULL, IDI_WINLOGO));
+    ImageList_AddIcon(hImageList, hIcon);
+    
+    DestroyIcon(hIcon);
+    ListView_SetImageList(hListView, hImageList, LVSIL_SMALL);
+    ListView_SetExtendedListViewStyle(hListView, LVS_EX_FULLROWSELECT| LVS_EX_HEADERDRAGDROP);
+
+    const std::wstring columnHeaders[] = {
+        L"Имя процесса", L"ID процесса", L"ID родительского процесса", L"Приоритет",
+        L"Загрузка ЦП", L"Загрузка Памяти", L"Время создания", L"Путь к файлу", L"Битность"
+    };
+    int columnWidths[] = { 200, 150, 150, 150, 150, 190, 180, 240, 80 };
+
+    for (int i = 0; i < 9; i++) {
+        lvColumn.mask = (i == 0) 
+                        ? LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM | LVCF_FMT | LVCF_IMAGE
+                        : LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM | LVCF_FMT;
+        
+        lvColumn.fmt = LVCFMT_CENTER;
+        lvColumn.cchTextMax = MAX_PATH;
+        lvColumn.pszText = (LPWSTR)columnHeaders[i].c_str();
+        lvColumn.cx = columnWidths[i];
+        lvColumn.iImage = 1;
+        lvColumn.iSubItem = i;
+        
+        ListView_InsertColumn(hListView, i, &lvColumn);
+    }
+
+    return hListView;
+}
+
+/*std::wstring GetCpuUsage(HANDLE hProcess)
+{
+    if (hProcess)
+    {
+        FILETIME idleTime, kernelTime, userTime;
+        FILETIME creationTime, exitTime, processKernelTime, processUserTime;
+
+        GetSystemTimes(&idleTime, &kernelTime, &userTime);
+
+        GetProcessTimes(hProcess, &creationTime, &exitTime, &processKernelTime, &processUserTime);
+
+        ULARGE_INTEGER user, kernel;
+        user.LowPart = processUserTime.dwLowDateTime;
+        user.HighPart = processUserTime.dwHighDateTime;
+        kernel.LowPart = processKernelTime.dwLowDateTime;
+        kernel.HighPart = processKernelTime.dwHighDateTime;
+
+        ULONGLONG totalProcessTime = user.QuadPart + kernel.QuadPart;
+
+        ULARGE_INTEGER sys, idl;
+        sys.LowPart = userTime.dwLowDateTime + kernelTime.dwLowDateTime;
+        sys.HighPart = userTime.dwHighDateTime + kernelTime.dwHighDateTime;
+        idl.LowPart = idleTime.dwLowDateTime;
+        idl.HighPart = idleTime.dwHighDateTime;
+
+        double cpu = (totalProcessTime * 100.0) / (sys.QuadPart + idl.QuadPart);
+        return std::to_wstring(cpu * 100) + L"%";
+    }
+    return L"N/A";
+}*/
+
 void PopulateProcessListView(HWND hListView, std::map<std::wstring, int>& iconMap)
 {
     ListView_DeleteAllItems(hListView);
@@ -350,22 +397,31 @@ void PopulateProcessListView(HWND hListView, std::map<std::wstring, int>& iconMa
             int itemIndex = ListView_InsertItem(hListView, &lvi);
 
             ListView_SetItemText(hListView, itemIndex, 1, (LPWSTR)std::to_wstring(pe32.th32ProcessID).c_str()); // ID
-            std::wstring parent = pe32.th32ParentProcessID == 0 ? std::to_wstring(-1) : std::to_wstring(pe32.th32ParentProcessID);
+            std::wstring parent = pe32.th32ParentProcessID == 0 ? L"Главный процесс" : std::to_wstring(pe32.th32ParentProcessID);
             ListView_SetItemText(hListView, itemIndex, 2, (LPWSTR)parent.c_str())
             ListView_SetItemText(hListView, itemIndex, 3, (LPWSTR)GetPriority(pe32.th32ProcessID).c_str());
-            ListView_SetItemText(hListView, itemIndex, 6, (LPWSTR)GetProcessTimeCreation(pe32.th32ProcessID).c_str());
-            ListView_SetItemText(hListView, itemIndex, 8, Is64BitProcess(pe32.th32ProcessID) ? (LPWSTR)L"64-бит" : (LPWSTR)L"32-бит");
 
+            HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pe32.th32ProcessID);
+            if (hProcess)
+            {
+                //std::wstring cpuUsage = GetCpuUsage(hProcess);
+                //ListView_SetItemText(hListView, itemIndex, 4, (LPWSTR)cpuUsage.c_str()); // CPU Usage
+                
+                std::wstring memUsage = GetMemoryUsage(hProcess);
+                ListView_SetItemText(hListView, itemIndex, 5, (LPWSTR)memUsage.c_str());
+                CloseHandle(hProcess);
+            }
+            ListView_SetItemText(hListView, itemIndex, 6, (LPWSTR)GetProcessTimeCreation(pe32.th32ProcessID).c_str());
             TCHAR fullPath[MAX_PATH];
             DWORD processNameLength = sizeof(fullPath) / sizeof(TCHAR);
             if (QueryFullProcessImageName(OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pe32.th32ProcessID), 0, fullPath, &processNameLength)) {
                 ListView_SetItemText(hListView, itemIndex, 7, (LPWSTR)fullPath);
             }
+            ListView_SetItemText(hListView, itemIndex, 8, Is64BitProcess(pe32.th32ProcessID) ? (LPWSTR)L"64-бит" : (LPWSTR)L"32-бит");
             
 
         } while (Process32Next(hProcessSnap, &pe32));
     }
-
     CloseHandle(hProcessSnap);
 }
 
