@@ -17,6 +17,9 @@
 #define IDC_TABCONTROL 0x3010
 #define IDC_LISTVIEW_PROCESSES 0x4010
 
+#define IDM_CLOSE_PROCESS 0x4011
+#define IDM_OPEN_LOCATION 0x4012
+
 #include <Windows.h>
 #include <iomanip>
 #include <CommCtrl.h>
@@ -27,8 +30,18 @@
 #include <Psapi.h>    // For process memory information
 #include <shellapi.h>
 #include <map>
+#include <vector>
+#include <algorithm>
 
 #include "info.h"
+
+#define ProcessListViewX 10
+#define ProcessListViewY 25
+
+#define TabControlX 10
+#define TabControlY 10
+
+HWND hProcessList;
 
 HMENU CreateAppMenu() {
     HMENU hMenu = CreateMenu();
@@ -59,10 +72,25 @@ void AddTabItems(HWND hTab) {
     TabCtrl_InsertItem(hTab, 2, &tie);
 }
 
+HMENU CreateContextMenu() {
+    HMENU hMenu = CreatePopupMenu();
+    AppendMenu(hMenu, MF_STRING, IDM_CLOSE_PROCESS, L"Закрыть процесс");
+    AppendMenu(hMenu, MF_STRING, IDM_OPEN_LOCATION, L"Открыть расположение файла");
+    return hMenu;
+}
+
+void HandleContextMenu(HWND hwnd, WPARAM wParam, LPARAM lParam) {
+    POINT pt;
+    GetCursorPos(&pt);
+    HMENU hMenu = CreateContextMenu();
+    TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, NULL);
+    DestroyMenu(hMenu);
+}
+
 HWND CreateProcessListView(HWND hParent) {
     HWND hListView = CreateWindowEx(0, WC_LISTVIEW, NULL,
         WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
-        10, 40, SCREEN_WIDTH - 40, SCREEN_HEIGHT - 200,
+        ProcessListViewX, ProcessListViewY, SCREEN_WIDTH - 40, SCREEN_HEIGHT - 100,
         hParent, (HMENU)IDC_LISTVIEW_PROCESSES, (HINSTANCE)GetWindowLongPtr(hParent, GWLP_HINSTANCE), NULL);
 
     LVCOLUMN lvColumn;
@@ -70,12 +98,13 @@ HWND CreateProcessListView(HWND hParent) {
     HIMAGELIST hImageList = ImageList_Create(16, 16, ILC_COLOR32 | ILC_MASK, 1, 1);
     ImageList_SetBkColor(hImageList, CLR_NONE);
     
-    HICON hIcon = LoadIcon((HINSTANCE)GetWindowLongPtr(hParent, GWLP_HINSTANCE), MAKEINTRESOURCE(IDI_MAINICON));  // Пример: загрузка системной иконки
+    HICON hIcon = LoadIcon((HINSTANCE)GetWindowLongPtr(hParent, GWLP_HINSTANCE), MAKEINTRESOURCE(IDI_MAINICON));
     ImageList_AddIcon(hImageList, LoadIcon(NULL, IDI_WINLOGO));
     ImageList_AddIcon(hImageList, hIcon);
     
     DestroyIcon(hIcon);
     ListView_SetImageList(hListView, hImageList, LVSIL_SMALL);
+    ListView_SetExtendedListViewStyle(hListView, LVS_EX_FULLROWSELECT| LVS_EX_HEADERDRAGDROP);
 
     const std::wstring columnHeaders[] = {
         L"Имя процесса", L"ID процесса", L"ID родительского процесса", L"Приоритет",
@@ -93,6 +122,7 @@ HWND CreateProcessListView(HWND hParent) {
         lvColumn.pszText = (LPWSTR)columnHeaders[i].c_str();
         lvColumn.cx = columnWidths[i];
         lvColumn.iImage = 1;
+        lvColumn.iSubItem = i;
         
         ListView_InsertColumn(hListView, i, &lvColumn);
     }
@@ -102,29 +132,109 @@ HWND CreateProcessListView(HWND hParent) {
 
 WNDPROC oldListViewProcessesProc;
 
-LRESULT CALLBACK ListViewProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+void CloseProcessById(DWORD processId) {
+    HANDLE hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, processId);
+    if (hProcess) {
+        if (TerminateProcess(hProcess, 0)) {
+            MessageBox(NULL, L"Процесс успешно завершён.", L"Успех", MB_OK | MB_ICONINFORMATION);
+        } else {
+            MessageBox(NULL, L"Не удалось завершить процесс.", L"Ошибка", MB_OK | MB_ICONERROR);
+        }
+        CloseHandle(hProcess);
+    } else {
+        MessageBox(NULL, L"Не удалось открыть процесс для завершения.", L"Ошибка", MB_OK | MB_ICONERROR);
+    }
+}
+
+void OpenProcessLocation(DWORD processId) {
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, processId);
+    if (hProcess) {
+        TCHAR fullPath[MAX_PATH] = {0};
+        DWORD size = MAX_PATH;
+
+        if (QueryFullProcessImageName(hProcess, 0, fullPath, &size)) {
+            std::wstring folderPath(fullPath);
+            folderPath = folderPath.substr(0, folderPath.find_last_of(L"\\/"));
+
+            ShellExecute(NULL, L"open", folderPath.c_str(), NULL, NULL, SW_SHOWNORMAL);
+        } else {
+            MessageBox(NULL, L"Не удалось получить путь процесса.", L"Ошибка", MB_OK | MB_ICONERROR);
+        }
+
+        CloseHandle(hProcess);
+    } else {
+        MessageBox(NULL, L"Не удалось открыть процесс для получения пути.", L"Ошибка", MB_OK | MB_ICONERROR);
+    }
+}
+
+LRESULT CALLBACK ListViewProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    static int selectedItemIndex;
     switch (uMsg)
     {
-        case WM_NOTIFY:
-        {
-             LPNMHDR pnmh = (LPNMHDR)lParam;
-             if (pnmh->code == HDN_ITEMCHANGING)
-             {
-                 LPNMHEADER pnmhHeader = (LPNMHEADER)lParam;
+        case WM_COMMAND:
+            {
+                int wmId = LOWORD(wParam);
+                int wmEvent = HIWORD(wParam);
 
-                 if (pnmhHeader->pitem->cxy < 30)
-                 {
-                     pnmhHeader->pitem->cxy = 30;
-                 }
-             }   
-        }
-        break;
+                switch (wmId) 
+                {
+                    case IDM_CLOSE_PROCESS:
+                    {
+                       wchar_t buffer[32];
+                       ListView_GetItemText(hwnd, selectedItemIndex, 1, buffer, 32);
+                       DWORD processId = _wtoi(buffer);
+                       CloseProcessById(processId);
+                    }
+                    break;
+                    
+                    case IDM_OPEN_LOCATION:
+                    {
+                       wchar_t buffer[32];
+                       ListView_GetItemText(hwnd, selectedItemIndex, 1, buffer, 32);
+                       DWORD processId = _wtoi(buffer);
+                       OpenProcessLocation(processId);
+                    }
+                    break;
+                }
+            }
+            break;
+        
+            case WM_CONTEXTMENU: {
+                if ((HWND)wParam == hwnd)
+                {
+                    LVHITTESTINFO hitTestInfo = { 0 };
+                    POINT pt;
+                    GetCursorPos(&pt);
+                    ScreenToClient(hwnd, &pt);
+                    hitTestInfo.pt = pt;
+                    ListView_HitTest(hwnd, &hitTestInfo);
+                    selectedItemIndex = hitTestInfo.iItem;
+                    if (selectedItemIndex != -1)
+                    {
+                        HandleContextMenu(hwnd, wParam, lParam);
+                    }
+                }
+                break;
+            }
+
+        case WM_NOTIFY:
+            {
+                LPNMHDR nmhdr = (LPNMHDR)lParam;
+
+                if (nmhdr->code == HDN_ITEMCHANGING) {
+                    LPNMHEADER pnmhHeader = (LPNMHEADER)lParam;
+                    if (pnmhHeader->pitem->cxy < 30) {
+                        pnmhHeader->pitem->cxy = 30;
+                    }
+                }
+                
+                break;
+            }
 
         default:
-            return CallWindowProc(oldListViewProcessesProc, hWnd, uMsg, wParam, lParam);
+            return CallWindowProc(oldListViewProcessesProc, hwnd, uMsg, wParam, lParam);
     }
-    
-    return CallWindowProc(oldListViewProcessesProc, hWnd, uMsg, wParam, lParam);
+    return CallWindowProc(oldListViewProcessesProc, hwnd, uMsg, wParam, lParam);
 }
 
 std::wstring GetPriority(DWORD processId)
@@ -181,7 +291,6 @@ void ChangeIcon(PROCESSENTRY32 pe32, HWND hListView, LVITEM& lvi, std::map<std::
             }
         }
         CloseHandle(hProcess);
-        
     }
 }
 
@@ -232,20 +341,20 @@ void PopulateProcessListView(HWND hListView, std::map<std::wstring, int>& iconMa
     if (Process32First(hProcessSnap, &pe32)) {
         do {
             LVITEM lvi = {0};
-            lvi.mask = LVIF_TEXT | LVIF_IMAGE;
+            lvi.mask = LVIF_TEXT | LVIF_IMAGE | LVIF_PARAM;
             lvi.pszText = (LPWSTR)pe32.szExeFile;
             lvi.iImage = 0;
             lvi.cchTextMax = MAX_PATH;
+            lvi.lParam = ListView_GetItemCount(hListView);
             ChangeIcon(pe32, hListView, lvi, iconMap);
-
             int itemIndex = ListView_InsertItem(hListView, &lvi);
 
             ListView_SetItemText(hListView, itemIndex, 1, (LPWSTR)std::to_wstring(pe32.th32ProcessID).c_str()); // ID
-            std::wstring parent = pe32.th32ParentProcessID == 0 ? L"Главный процесс" : std::to_wstring(pe32.th32ParentProcessID);
+            std::wstring parent = pe32.th32ParentProcessID == 0 ? std::to_wstring(-1) : std::to_wstring(pe32.th32ParentProcessID);
             ListView_SetItemText(hListView, itemIndex, 2, (LPWSTR)parent.c_str())
             ListView_SetItemText(hListView, itemIndex, 3, (LPWSTR)GetPriority(pe32.th32ProcessID).c_str());
             ListView_SetItemText(hListView, itemIndex, 6, (LPWSTR)GetProcessTimeCreation(pe32.th32ProcessID).c_str());
-            ListView_SetItemText(hListView, itemIndex, 8, Is64BitProcess(pe32.th32ProcessID) ? (LPWSTR)L"64-bit" : (LPWSTR)L"32-bit");
+            ListView_SetItemText(hListView, itemIndex, 8, Is64BitProcess(pe32.th32ProcessID) ? (LPWSTR)L"64-бит" : (LPWSTR)L"32-бит");
 
             TCHAR fullPath[MAX_PATH];
             DWORD processNameLength = sizeof(fullPath) / sizeof(TCHAR);
@@ -262,7 +371,7 @@ void PopulateProcessListView(HWND hListView, std::map<std::wstring, int>& iconMa
 
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
-    static HWND hFontButton, hTabControl, hListViewProcesses;
+    static HWND hTabControl, hListViewProcesses;
     static std::map<std::wstring, int> iconMap;
     
     switch (uMsg)
@@ -279,19 +388,16 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
         case WM_CREATE:
         {
-            hFontButton = CreateWindowEx(0, L"BUTTON", L"Font Settings",
-            WS_CHILD | WS_VISIBLE | BS_PUSHBOX | BS_OWNERDRAW,
-            1, SCREEN_HEIGHT - 120, 200, 25, hwnd, (HMENU)ID_SELECT_BTN, NULL, NULL);
-
             hTabControl = CreateWindowEx(0, WC_TABCONTROL, NULL,
                 WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
-                10, 10, SCREEN_WIDTH - 20, SCREEN_HEIGHT - 150,
+                TabControlX, TabControlY, SCREEN_WIDTH - 20, SCREEN_HEIGHT - 70,
                 hwnd, (HMENU)IDC_TABCONTROL, (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
 
             AddTabItems(hTabControl);
             SetMenu(hwnd, CreateAppMenu());
 
             hListViewProcesses = CreateProcessListView(hTabControl);
+            hProcessList = hListViewProcesses;    
             PopulateProcessListView(hListViewProcesses, iconMap);
             oldListViewProcessesProc = (WNDPROC)SetWindowLongPtr(hListViewProcesses, GWLP_WNDPROC, (LONG_PTR)ListViewProc);    
         }
@@ -300,24 +406,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         case WM_DRAWITEM:
         {
             LPDRAWITEMSTRUCT lpDrawItem = (LPDRAWITEMSTRUCT)lParam;
-            if (lpDrawItem->CtlID == ID_SELECT_BTN) {
-                HDC hdc = lpDrawItem->hDC;
+            if (lpDrawItem->CtlID == ID_SELECT_BTN)
+            {
 
-                HBRUSH hBrush = CreateSolidBrush(RGB(30, 144, 255));
-                FillRect(hdc, &lpDrawItem->rcItem, hBrush);
-                DeleteObject(hBrush);
-
-                SetTextColor(hdc, RGB(255, 255, 255));
-                SetBkMode(hdc, TRANSPARENT);
-
-                RECT textRect = lpDrawItem->rcItem;
-                DrawText(hdc, L"Font Settings", -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-
-                if (lpDrawItem->itemState & ODS_SELECTED) {
-                    FrameRect(hdc, &lpDrawItem->rcItem, (HBRUSH)GetStockObject(BLACK_BRUSH));
-                }
-
-                return TRUE;
             }
             break;
         }
@@ -336,7 +427,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         case WM_NOTIFY:
             {
                 NMHDR* nmhdr = (NMHDR*)lParam;
-                if (nmhdr->idFrom == IDC_TABCONTROL && nmhdr->code == TCN_SELCHANGE) {
+                if (nmhdr->hwndFrom == hTabControl && nmhdr->code == TCN_SELCHANGE) {
                     int tabIndex = TabCtrl_GetCurSel(hTabControl);
                     ShowWindow(hListViewProcesses, tabIndex == 0 ? SW_SHOW : SW_HIDE);
 
@@ -345,7 +436,29 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                         PopulateProcessListView(hListViewProcesses, iconMap);
                     }
                 }
-            }
+
+                if (nmhdr->hwndFrom == hListViewProcesses && nmhdr->code == LVN_COLUMNCLICK)
+                {
+                    NMITEMACTIVATE* pnmItem = (NMITEMACTIVATE*)lParam;
+                    LVCOLUMN lvColumn;
+                    ZeroMemory(&lvColumn, sizeof(lvColumn));
+
+                    static int nSortColumn = 0;
+                    static BOOL bSortAscending = TRUE;
+                    LPARAM lParamSort;
+
+                    if (pnmItem->iSubItem == nSortColumn)
+                    {
+                        bSortAscending = !bSortAscending;
+                    }
+                    else
+                    {
+                        nSortColumn = pnmItem->iSubItem;
+                        bSortAscending = TRUE;    
+                    }
+                    //SortListView(hListViewProcesses, nSortColumn, bSortAscending);
+                }
+            }    
             break;
 
         case WM_COMMAND:
@@ -369,6 +482,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         }
         break;
 
+        
     case WM_CLOSE:
         if (MessageBox(hwnd, L"Really quit?", L"My application", MB_OKCANCEL) == IDOK)
         {
@@ -376,8 +490,20 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         }
         break;
 
+    case WM_SIZE:
+        {
+            int width = LOWORD(lParam);
+            int height = HIWORD(lParam);
+            MoveWindow(hTabControl, TabControlY, TabControlY, width - 20, height - 70, TRUE);
+            MoveWindow(hListViewProcesses, ProcessListViewX, ProcessListViewY, width - 40, height - 100, TRUE);
+
+            return 0;
+        }
+        
     case WM_DESTROY:
     {
+        HIMAGELIST hImageList = ListView_GetImageList(hListViewProcesses, LVSIL_SMALL);
+        if (hImageList) ImageList_Destroy(hImageList);
         PostQuitMessage(0);
     }
     return 0;
