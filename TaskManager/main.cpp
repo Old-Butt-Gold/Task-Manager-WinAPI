@@ -40,21 +40,17 @@
 #include <sstream>
 #include <set>
 
-#include "info.h"
-
 #define ProcessListViewX 10
 #define ProcessListViewY 25
 
 #define TabControlX 10
 #define TabControlY 10
 
-HWND hProcessList;
-
 HMENU CreateAppMenu() {
     HMENU hMenu = CreateMenu();
     HMENU hFileMenu = CreatePopupMenu();
     HMENU hRefreshMenu = CreatePopupMenu();
-
+    
     AppendMenu(hFileMenu, MF_STRING, ID_MENU_RUN_TASK, L"Запустить новую задачу");
     AppendMenu(hFileMenu, MF_STRING, ID_MENU_SAVE_INFO, L"Сохранить информацию");
     AppendMenu(hFileMenu, MF_SEPARATOR, 0, NULL);
@@ -72,20 +68,40 @@ HMENU CreateAppMenu() {
     return hMenu;
 }
 
+HIMAGELIST CreateTabImageList() {
+    HIMAGELIST hImageList = ImageList_Create(16, 16, ILC_COLOR32 | ILC_MASK, 1, 1);
+    ImageList_SetBkColor(hImageList, CLR_NONE);
+    HICON hIcon1 = LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(IDI_PROCESSICON));
+    HICON hIcon2 = LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(IDI_GRAPHICON));
+
+    ImageList_AddIcon(hImageList, hIcon1);
+    ImageList_AddIcon(hImageList, hIcon2);
+
+    DestroyIcon(hIcon1);
+    DestroyIcon(hIcon2);
+    return hImageList;
+}
 
 void AddTabItems(HWND hTab) {
+    HIMAGELIST hImageList = CreateTabImageList();
+    TabCtrl_SetImageList(hTab, hImageList);
+
     TCITEM tie = { 0 };
-    tie.mask = TCIF_TEXT;
+    tie.mask = TCIF_TEXT | TCIF_IMAGE;
 
     tie.pszText = (LPWSTR)L"Процессы";
+    tie.iImage = 0;
     TabCtrl_InsertItem(hTab, 0, &tie);
 
     tie.pszText = (LPWSTR)L"Производительность";
+    tie.iImage = 1;
     TabCtrl_InsertItem(hTab, 1, &tie);
 
     tie.pszText = (LPWSTR)L"Автозагрузка";
+    tie.iImage = 0;
     TabCtrl_InsertItem(hTab, 2, &tie);
 }
+
 
 HMENU CreateContextMenu() {
     HMENU hMenu = CreatePopupMenu();
@@ -325,7 +341,7 @@ HWND CreateProcessListView(HWND hParent) {
     HIMAGELIST hImageList = ImageList_Create(16, 16, ILC_COLOR32 | ILC_MASK, 1, 1);
     ImageList_SetBkColor(hImageList, CLR_NONE);
     
-    HICON hIcon = LoadIcon((HINSTANCE)GetWindowLongPtr(hParent, GWLP_HINSTANCE), MAKEINTRESOURCE(IDI_MAINICON));
+    HICON hIcon = LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(IDI_MAINICON));
     ImageList_AddIcon(hImageList, LoadIcon(NULL, IDI_WINLOGO));
     ImageList_AddIcon(hImageList, hIcon);
     
@@ -522,11 +538,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             SetMenu(hwnd, CreateAppMenu());
 
             hListViewProcesses = CreateProcessListView(hTabControl);
-            hProcessList = hListViewProcesses;    
             PopulateProcessListView(hListViewProcesses, iconMap);
             oldListViewProcessesProc = (WNDPROC)SetWindowLongPtr(hListViewProcesses, GWLP_WNDPROC, (LONG_PTR)ListViewProc);    
 
-            timerId = SetTimer(hwnd, TIMER_PROCESSES, 1000, NULL);
+            timerId = SetTimer(hwnd, TIMER_PROCESSES, updateInterval, NULL);
         }
         break;
 
@@ -580,7 +595,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
                     static int nSortColumn = 0;
                     static BOOL bSortAscending = TRUE;
-                    LPARAM lParamSort;
 
                     if (pnmItem->iSubItem == nSortColumn)
                     {
@@ -637,7 +651,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         break;
         
     case WM_CLOSE:
-        if (MessageBox(hwnd, L"Really quit?", L"My application", MB_OKCANCEL) == IDOK)
+        if (MessageBox(hwnd, L"Вы действительно хотите выйти?", L"Внимание", MB_OKCANCEL) == IDOK)
         {
             DestroyWindow(hwnd);
         }
@@ -657,6 +671,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
     {
         KillTimer(hwnd, TIMER_PROCESSES);
         HIMAGELIST hImageList = ListView_GetImageList(hListViewProcesses, LVSIL_SMALL);
+        if (hImageList) ImageList_Destroy(hImageList);
+        hImageList = TabCtrl_GetImageList(hTabControl);    
         if (hImageList) ImageList_Destroy(hImageList);
         PostQuitMessage(0);
     }
