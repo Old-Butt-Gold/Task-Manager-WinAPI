@@ -14,11 +14,18 @@
 #define ID_MENU_SAVE_INFO 0x2011
 #define ID_MENU_EXIT 0x2012
 #define ID_MENU_ABOUT 0x2013
-#define IDC_TABCONTROL 0x3010
-#define IDC_LISTVIEW_PROCESSES 0x4010
+#define ID_MENU_RARE 0x3010
+#define ID_MENU_NORMAL 0x3011
+#define ID_MENU_OFTEN 0x3012
+#define ID_MENU_NONE 0x3013
 
-#define IDM_CLOSE_PROCESS 0x4011
-#define IDM_OPEN_LOCATION 0x4012
+#define IDC_TABCONTROL 0x4010
+#define IDC_LISTVIEW_PROCESSES 0x5010
+
+#define IDM_CLOSE_PROCESS 0x5011
+#define IDM_OPEN_LOCATION 0x5012
+
+#define TIMER_PROCESSES 0x1
 
 #include <Windows.h>
 #include <iomanip>
@@ -31,6 +38,7 @@
 #include <shellapi.h>
 #include <map>
 #include <sstream>
+#include <set>
 
 #include "info.h"
 
@@ -45,17 +53,25 @@ HWND hProcessList;
 HMENU CreateAppMenu() {
     HMENU hMenu = CreateMenu();
     HMENU hFileMenu = CreatePopupMenu();
-    
+    HMENU hRefreshMenu = CreatePopupMenu();
+
     AppendMenu(hFileMenu, MF_STRING, ID_MENU_RUN_TASK, L"Запустить новую задачу");
     AppendMenu(hFileMenu, MF_STRING, ID_MENU_SAVE_INFO, L"Сохранить информацию");
     AppendMenu(hFileMenu, MF_SEPARATOR, 0, NULL);
     AppendMenu(hFileMenu, MF_STRING, ID_MENU_EXIT, L"Выход");
 
+    AppendMenu(hRefreshMenu, MF_STRING, ID_MENU_RARE, L"Редко (5 сек)");
+    AppendMenu(hRefreshMenu, MF_STRING, ID_MENU_NORMAL, L"Нормально (3 сек)");
+    AppendMenu(hRefreshMenu, MF_STRING, ID_MENU_OFTEN, L"Часто (1 сек)");
+    AppendMenu(hRefreshMenu, MF_STRING, ID_MENU_NONE, L"Отключить");
+
     AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hFileMenu, L"Файл");
     AppendMenu(hMenu, MF_STRING, ID_MENU_ABOUT, L"О разработчике");
+    AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hRefreshMenu, L"Частота обновления");
 
     return hMenu;
 }
+
 
 void AddTabItems(HWND hTab) {
     TCITEM tie = { 0 };
@@ -315,7 +331,7 @@ HWND CreateProcessListView(HWND hParent) {
     
     DestroyIcon(hIcon);
     ListView_SetImageList(hListView, hImageList, LVSIL_SMALL);
-    ListView_SetExtendedListViewStyle(hListView, LVS_EX_FULLROWSELECT| LVS_EX_HEADERDRAGDROP);
+    ListView_SetExtendedListViewStyle(hListView, LVS_EX_FULLROWSELECT| LVS_EX_HEADERDRAGDROP | LVS_EX_DOUBLEBUFFER);
 
     const std::wstring columnHeaders[] = {
         L"Имя процесса", L"ID процесса", L"ID родительского процесса", L"Приоритет",
@@ -372,66 +388,119 @@ HWND CreateProcessListView(HWND hParent) {
     return L"N/A";
 }*/
 
+int FindProcessInListViewByPID(HWND hListView, DWORD processID) {
+    LVFINDINFO findInfo = { 0 };
+    findInfo.flags = LVFI_PARAM;
+    findInfo.lParam = processID;
+    return ListView_FindItem(hListView, -1, &findInfo);
+}
+
+void RemoveStaleProcesses(HWND hListView, const std::set<DWORD>& existingProcesses) {
+    int itemCount = ListView_GetItemCount(hListView);
+    for (int i = itemCount - 1; i >= 0; --i) {
+        LVITEM lvi = { 0 };
+        lvi.iItem = i;
+        lvi.mask = LVIF_PARAM;
+
+        if (ListView_GetItem(hListView, &lvi)) {
+            DWORD processID = static_cast<DWORD>(lvi.lParam);
+
+            if (existingProcesses.find(processID) == existingProcesses.end()) {
+                ListView_DeleteItem(hListView, i);  // Удаляем неактуальный процесс
+            }
+        }
+    }
+}
+
 void PopulateProcessListView(HWND hListView, std::map<std::wstring, int>& iconMap)
 {
-    ListView_DeleteAllItems(hListView);
+    SCROLLINFO si = { sizeof(SCROLLINFO) };
+    si.fMask = SIF_POS;
+    GetScrollInfo(hListView, SB_VERT, &si);
+    int scrollPos = si.nPos;
 
-    HANDLE hProcessSnap;
-    PROCESSENTRY32 pe32;
-    hProcessSnap = CreateToolhelp32Snapshot(TH32CS_SNAPALL, 0);
-    if (hProcessSnap == INVALID_HANDLE_VALUE)
-    {
+    SendMessage(hListView, WM_SETREDRAW, FALSE, 0);
+
+    HANDLE hProcessSnap = CreateToolhelp32Snapshot(TH32CS_SNAPALL, 0);
+    if (hProcessSnap == INVALID_HANDLE_VALUE) {
         return;
     }
 
-    pe32.dwSize = sizeof(PROCESSENTRY32);
+    PROCESSENTRY32 pe32 = { sizeof(PROCESSENTRY32) };
+    std::set<DWORD> existingProcesses;
+    
     if (Process32First(hProcessSnap, &pe32)) {
         do {
-            LVITEM lvi = {0};
+            std::wstring exeFile = pe32.szExeFile;
+            DWORD processID = pe32.th32ProcessID;
+
+            int itemIndex = FindProcessInListViewByPID(hListView, processID);
+            
+            LVITEM lvi = { 0 };
             lvi.mask = LVIF_TEXT | LVIF_IMAGE | LVIF_PARAM;
-            lvi.pszText = (LPWSTR)pe32.szExeFile;
+            lvi.pszText = (LPWSTR)exeFile.c_str();
+            //lvi.iItem = (itemIndex == -1) ? 0 : ListView_GetItemCount(hListView);
+            lvi.iItem = (itemIndex == -1) ? ListView_GetItemCount(hListView) : itemIndex;
             lvi.iImage = 0;
             lvi.cchTextMax = MAX_PATH;
-            lvi.lParam = ListView_GetItemCount(hListView);
+            lvi.lParam = processID;
+            
             ChangeIcon(pe32, hListView, lvi, iconMap);
-            int itemIndex = ListView_InsertItem(hListView, &lvi);
 
-            ListView_SetItemText(hListView, itemIndex, 1, (LPWSTR)std::to_wstring(pe32.th32ProcessID).c_str()); // ID
+            if (itemIndex == -1) {
+                ListView_InsertItem(hListView, &lvi);
+            } else {
+                ListView_SetItem(hListView, &lvi);
+            }
+            
+            ListView_SetItemText(hListView, lvi.iItem, 1, (LPWSTR)std::to_wstring(pe32.th32ProcessID).c_str());
             std::wstring parent = pe32.th32ParentProcessID == 0 ? L"Главный процесс" : std::to_wstring(pe32.th32ParentProcessID);
-            ListView_SetItemText(hListView, itemIndex, 2, (LPWSTR)parent.c_str())
-            ListView_SetItemText(hListView, itemIndex, 3, (LPWSTR)GetPriority(pe32.th32ProcessID).c_str());
+            ListView_SetItemText(hListView, lvi.iItem, 2, (LPWSTR)parent.c_str());
+            ListView_SetItemText(hListView, lvi.iItem, 3, (LPWSTR)GetPriority(pe32.th32ProcessID).c_str());
 
             HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pe32.th32ProcessID);
             if (hProcess)
             {
-                //std::wstring cpuUsage = GetCpuUsage(hProcess);
-                //ListView_SetItemText(hListView, itemIndex, 4, (LPWSTR)cpuUsage.c_str()); // CPU Usage
-                
                 std::wstring memUsage = GetMemoryUsage(hProcess);
                 ListView_SetItemText(hListView, itemIndex, 5, (LPWSTR)memUsage.c_str());
                 CloseHandle(hProcess);
             }
+
             ListView_SetItemText(hListView, itemIndex, 6, (LPWSTR)GetProcessTimeCreation(pe32.th32ProcessID).c_str());
+
             TCHAR fullPath[MAX_PATH];
             DWORD processNameLength = sizeof(fullPath) / sizeof(TCHAR);
             if (QueryFullProcessImageName(OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pe32.th32ProcessID), 0, fullPath, &processNameLength)) {
                 ListView_SetItemText(hListView, itemIndex, 7, (LPWSTR)fullPath);
             }
             ListView_SetItemText(hListView, itemIndex, 8, Is64BitProcess(pe32.th32ProcessID) ? (LPWSTR)L"64-бит" : (LPWSTR)L"32-бит");
-            
 
+            existingProcesses.insert(processID);
         } while (Process32Next(hProcessSnap, &pe32));
     }
     CloseHandle(hProcessSnap);
+
+    RemoveStaleProcesses(hListView, existingProcesses);
+
+    SendMessage(hListView, WM_SETREDRAW, TRUE, 0);
+
+    si.nPos = scrollPos;
+    SetScrollInfo(hListView, SB_VERT, &si, TRUE);
 }
 
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
     static HWND hTabControl, hListViewProcesses;
     static std::map<std::wstring, int> iconMap;
+
+    static UINT_PTR timerId = 0;  
+    static int updateInterval = 1000;
     
     switch (uMsg)
     {
+        case WM_ERASEBKGND:
+            return 1;
+
         case WM_PAINT:
         {
             PAINTSTRUCT ps;
@@ -456,8 +525,18 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             hProcessList = hListViewProcesses;    
             PopulateProcessListView(hListViewProcesses, iconMap);
             oldListViewProcessesProc = (WNDPROC)SetWindowLongPtr(hListViewProcesses, GWLP_WNDPROC, (LONG_PTR)ListViewProc);    
+
+            timerId = SetTimer(hwnd, TIMER_PROCESSES, 1000, NULL);
         }
         break;
+
+        case WM_TIMER:
+        {
+            if (wParam == TIMER_PROCESSES)
+            {
+                PopulateProcessListView(hListViewProcesses, iconMap);
+            }    
+        }
 
         case WM_DRAWITEM:
         {
@@ -534,10 +613,28 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                     MessageBox(hwnd, L"Task Manager App\nDeveloped by Krutko Andrey\nBSUIR 2024", L"About", MB_OK | MB_ICONINFORMATION);
                 }
                 break;
+
+            case ID_MENU_RARE:
+                updateInterval = 5000;
+                break;
+            case ID_MENU_NORMAL:
+                updateInterval = 3000;
+                break;
+            case ID_MENU_OFTEN:
+                updateInterval = 1000;
+                break;
+            case ID_MENU_NONE:
+                KillTimer(hwnd, TIMER_PROCESSES);
+                timerId = 0;
+                return 0;
             }
+
+            if (timerId) {
+                KillTimer(hwnd, TIMER_PROCESSES);
+            }
+            timerId = SetTimer(hwnd, TIMER_PROCESSES, updateInterval, NULL);
         }
         break;
-
         
     case WM_CLOSE:
         if (MessageBox(hwnd, L"Really quit?", L"My application", MB_OKCANCEL) == IDOK)
@@ -558,6 +655,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         
     case WM_DESTROY:
     {
+        KillTimer(hwnd, TIMER_PROCESSES);
         HIMAGELIST hImageList = ListView_GetImageList(hListViewProcesses, LVSIL_SMALL);
         if (hImageList) ImageList_Destroy(hImageList);
         PostQuitMessage(0);
