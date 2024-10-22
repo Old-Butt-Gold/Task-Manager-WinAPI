@@ -11,21 +11,24 @@
 
 #define ID_SELECT_BTN 0x1010
 #define ID_MENU_RUN_TASK 0x2010
-#define ID_MENU_SAVE_INFO 0x2011
-#define ID_MENU_EXIT 0x2012
-#define ID_MENU_ABOUT 0x2013
+#define ID_MENU_EXIT 0x2011
+#define ID_MENU_ABOUT 0x2012
 #define ID_MENU_RARE 0x3010
 #define ID_MENU_NORMAL 0x3011
 #define ID_MENU_OFTEN 0x3012
 #define ID_MENU_NONE 0x3013
+#define ID_MENU_UPDATE 0x4010
 
-#define IDC_TABCONTROL 0x4010
-#define IDC_LISTVIEW_PROCESSES 0x5010
+#define IDC_TABCONTROL 0x5010
+#define IDC_LISTVIEW_PROCESSES 0x6010
+#define IDC_PROGRESSBAR_CPU 0x7010
+#define IDC_PROGRESSBAR_RAM 0x8010
 
 #define IDM_CLOSE_PROCESS 0x5011
 #define IDM_OPEN_LOCATION 0x5012
 
 #define TIMER_PROCESSES 0x1
+#define TIMER_GRAPH 0x2
 
 #include <Windows.h>
 #include <iomanip>
@@ -39,6 +42,9 @@
 #include <map>
 #include <sstream>
 #include <set>
+#include <fstream>
+#include <vector>
+
 
 #define ProcessListViewX 10
 #define ProcessListViewY 25
@@ -52,7 +58,6 @@ HMENU CreateAppMenu() {
     HMENU hRefreshMenu = CreatePopupMenu();
     
     AppendMenu(hFileMenu, MF_STRING, ID_MENU_RUN_TASK, L"Запустить новую задачу");
-    AppendMenu(hFileMenu, MF_STRING, ID_MENU_SAVE_INFO, L"Сохранить информацию");
     AppendMenu(hFileMenu, MF_SEPARATOR, 0, NULL);
     AppendMenu(hFileMenu, MF_STRING, ID_MENU_EXIT, L"Выход");
 
@@ -64,6 +69,7 @@ HMENU CreateAppMenu() {
     AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hFileMenu, L"Файл");
     AppendMenu(hMenu, MF_STRING, ID_MENU_ABOUT, L"О разработчике");
     AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hRefreshMenu, L"Частота обновления");
+    AppendMenu(hMenu, MF_STRING, ID_MENU_UPDATE, L"Обновить сейчас");
 
     return hMenu;
 }
@@ -101,7 +107,6 @@ void AddTabItems(HWND hTab) {
     tie.iImage = 0;
     TabCtrl_InsertItem(hTab, 2, &tie);
 }
-
 
 HMENU CreateContextMenu() {
     HMENU hMenu = CreatePopupMenu();
@@ -353,7 +358,7 @@ HWND CreateProcessListView(HWND hParent) {
         L"Имя процесса", L"ID процесса", L"ID родительского процесса", L"Приоритет",
         L"Загрузка ЦП", L"Загрузка Памяти", L"Время создания", L"Путь к файлу", L"Битность"
     };
-    int columnWidths[] = { 200, 150, 150, 150, 150, 190, 180, 240, 80 };
+    int columnWidths[] = { 200, 145, 145, 150, 150, 185, 180, 240, 80 };
 
     for (int i = 0; i < 9; i++) {
         lvColumn.mask = (i == 0) 
@@ -478,18 +483,18 @@ void PopulateProcessListView(HWND hListView, std::map<std::wstring, int>& iconMa
             if (hProcess)
             {
                 std::wstring memUsage = GetMemoryUsage(hProcess);
-                ListView_SetItemText(hListView, itemIndex, 5, (LPWSTR)memUsage.c_str());
+                ListView_SetItemText(hListView, lvi.iItem, 5, (LPWSTR)memUsage.c_str());
                 CloseHandle(hProcess);
             }
 
-            ListView_SetItemText(hListView, itemIndex, 6, (LPWSTR)GetProcessTimeCreation(pe32.th32ProcessID).c_str());
+            ListView_SetItemText(hListView, lvi.iItem, 6, (LPWSTR)GetProcessTimeCreation(pe32.th32ProcessID).c_str());
 
             TCHAR fullPath[MAX_PATH];
             DWORD processNameLength = sizeof(fullPath) / sizeof(TCHAR);
             if (QueryFullProcessImageName(OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pe32.th32ProcessID), 0, fullPath, &processNameLength)) {
-                ListView_SetItemText(hListView, itemIndex, 7, (LPWSTR)fullPath);
+                ListView_SetItemText(hListView, lvi.iItem, 7, (LPWSTR)fullPath);
             }
-            ListView_SetItemText(hListView, itemIndex, 8, Is64BitProcess(pe32.th32ProcessID) ? (LPWSTR)L"64-бит" : (LPWSTR)L"32-бит");
+            ListView_SetItemText(hListView, lvi.iItem, 8, Is64BitProcess(pe32.th32ProcessID) ? (LPWSTR)L"64-бит" : (LPWSTR)L"32-бит");
 
             existingProcesses.insert(processID);
         } while (Process32Next(hProcessSnap, &pe32));
@@ -504,13 +509,114 @@ void PopulateProcessListView(HWND hListView, std::map<std::wstring, int>& iconMa
     SetScrollInfo(hListView, SB_VERT, &si, TRUE);
 }
 
+int GetCurrentRAMUsage() {
+    MEMORYSTATUSEX memInfo;
+    memInfo.dwLength = sizeof(MEMORYSTATUSEX);
+
+    if (GlobalMemoryStatusEx(&memInfo)) {
+        DWORDLONG totalRAM = memInfo.ullTotalPhys;
+        DWORDLONG freeRAM = memInfo.ullAvailPhys;
+
+        int ramUsage = static_cast<int>((1.0 - (double)freeRAM / totalRAM) * 100);
+        return ramUsage;
+    }
+
+    return 0;
+}
+
+typedef struct _SYSTEM_PROCESSOR_TIMES {
+    ULONGLONG IdleTime;
+    ULONGLONG KernelTime;
+    ULONGLONG UserTime;
+    ULONGLONG DpcTime;
+    ULONGLONG InterruptTime;
+    ULONG     InterruptCount;
+} SYSTEM_PROCESSOR_TIMES;
+
+typedef NTSTATUS (NTAPI *ZwQuerySystemInformationFunc)(
+    ULONG SystemInformationClass, 
+    PVOID SystemInformation, 
+    ULONG SystemInformationLength, 
+    PULONG ReturnLength
+);
+
+int GetCurrentCPUUsage(SYSTEM_INFO sysInfo, SYSTEM_PROCESSOR_TIMES* CurrentSysProcTimes,
+    SYSTEM_PROCESSOR_TIMES* PreviousSysProcTimes,
+    ZwQuerySystemInformationFunc ZwQuerySystemInformation)
+{
+    static DWORD oldTime = 0;
+    DWORD nowTime = GetTickCount();
+    DWORD perTime = nowTime - oldTime;
+    oldTime = nowTime;
+
+    ZwQuerySystemInformation(sysInfo.dwNumberOfProcessors, &CurrentSysProcTimes[0], sizeof(SYSTEM_PROCESSOR_TIMES) * sysInfo.dwNumberOfProcessors, nullptr);
+
+    ULONGLONG totalIdleTime = 0;
+    for (int j = 0; j < sysInfo.dwNumberOfProcessors; j++) {
+        totalIdleTime += CurrentSysProcTimes[j].IdleTime - PreviousSysProcTimes[j].IdleTime;
+    }
+
+    ULONGLONG averageIdleTime = totalIdleTime / sysInfo.dwNumberOfProcessors;
+
+    double idleTimeMs = averageIdleTime / 10000.0;
+
+    double cpuUsage = 100.0 * (1.0 - (idleTimeMs / perTime));
+
+    if (cpuUsage < 0 || cpuUsage > 100) {
+        cpuUsage = 0;
+    }
+
+    memcpy(&PreviousSysProcTimes[0], &CurrentSysProcTimes[0], sizeof(SYSTEM_PROCESSOR_TIMES) * sysInfo.dwNumberOfProcessors);
+    return cpuUsage;
+}
+
+std::wstring GetSystemUptime() {
+    ULONGLONG systemUptime = GetTickCount64();
+    ULONGLONG seconds = (systemUptime / 1000) % 60;
+    ULONGLONG minutes = (systemUptime / (1000 * 60)) % 60;
+    ULONGLONG hours = (systemUptime / (1000 * 60 * 60)) % 24;
+    ULONGLONG days = (systemUptime / (1000 * 60 * 60 * 24));
+
+    return L"Время работы: " + std::to_wstring(days) + L" дн. " +
+           std::to_wstring(hours) + L" ч. " +
+           std::to_wstring(minutes) + L" мин. " +
+           std::to_wstring(seconds) + L" сек.";
+}
+
+std::wstring GetMemoryInfo()
+{
+    MEMORYSTATUSEX memoryStatus;
+    memoryStatus.dwLength = sizeof(MEMORYSTATUSEX);
+
+    if (GlobalMemoryStatusEx(&memoryStatus))
+    {
+        ULONGLONG totalMemoryMB = memoryStatus.ullTotalPhys / (1024 * 1024);
+        ULONGLONG freeMemoryMB = memoryStatus.ullAvailPhys / (1024 * 1024);
+
+        std::wstring result = L"Общий объем памяти: " + std::to_wstring(totalMemoryMB) + L" МБ\r\n" +
+                              L"Свободно: " + std::to_wstring(freeMemoryMB) + L" МБ";
+        return result;
+    }
+    return L"Ошибка получения информации о памяти";
+}
+
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
     static HWND hTabControl, hListViewProcesses;
     static std::map<std::wstring, int> iconMap;
+    static HWND hProgressBarCPU;
+    static HWND hProgressBarRAM;
 
     static UINT_PTR timerId = 0;  
     static int updateInterval = 1000;
+
+    static HMODULE lib = nullptr;
+    static SYSTEM_PROCESSOR_TIMES* CurrentSysProcTimes;
+    static SYSTEM_PROCESSOR_TIMES* PreviousSysProcTimes;
+    static ZwQuerySystemInformationFunc ZwQuerySystemInformation = nullptr;
+    
+    static HWND hLabelCPU, hLabelRAM, hLabelUptime, hLabelMemoryInfo;
+    static SYSTEM_INFO sysInfo;
     
     switch (uMsg)
     {
@@ -529,10 +635,38 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
         case WM_CREATE:
         {
+            GetSystemInfo(&sysInfo);
+            CurrentSysProcTimes = new SYSTEM_PROCESSOR_TIMES[sysInfo.dwNumberOfProcessors];    
+            PreviousSysProcTimes = new SYSTEM_PROCESSOR_TIMES[sysInfo.dwNumberOfProcessors];    
+            ZeroMemory(CurrentSysProcTimes, sizeof(SYSTEM_PROCESSOR_TIMES) * sysInfo.dwNumberOfProcessors);
+            ZeroMemory(PreviousSysProcTimes, sizeof(SYSTEM_PROCESSOR_TIMES) * sysInfo.dwNumberOfProcessors);
+
+            lib = LoadLibrary(L"ntdll.dll");
+            if (!lib) {
+                MessageBox(NULL, L"Не удалось загрузить ntdll.dll", L"Ошибка", MB_OK | MB_ICONERROR);
+                PostQuitMessage(0);
+                return -1;
+            }
+
+            ZwQuerySystemInformation = (ZwQuerySystemInformationFunc)GetProcAddress(lib, "ZwQuerySystemInformation");
+            if (!ZwQuerySystemInformation) {
+                MessageBox(NULL, L"Не удалось найти функцию ZwQuerySystemInformation", L"Ошибка", MB_OK | MB_ICONERROR);
+                FreeLibrary(lib);
+                PostQuitMessage(0);
+                return -1;
+            }
+
+            if (ZwQuerySystemInformation(sysInfo.dwNumberOfProcessors, &PreviousSysProcTimes[0], sizeof(SYSTEM_PROCESSOR_TIMES) * sysInfo.dwNumberOfProcessors, nullptr) != 0) {
+                MessageBox(NULL, L"Не удалось получить данные о процессорах", L"Ошибка", MB_OK | MB_ICONERROR);
+                FreeLibrary(lib);
+                PostQuitMessage(0);
+                return -1;
+            }     
+
             hTabControl = CreateWindowEx(0, WC_TABCONTROL, NULL,
-                WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
-                TabControlX, TabControlY, SCREEN_WIDTH - 20, SCREEN_HEIGHT - 70,
-                hwnd, (HMENU)IDC_TABCONTROL, (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
+            WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
+                   TabControlX, TabControlY, SCREEN_WIDTH - 20, SCREEN_HEIGHT - 70,
+                   hwnd, (HMENU)IDC_TABCONTROL, (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
 
             AddTabItems(hTabControl);
             SetMenu(hwnd, CreateAppMenu());
@@ -542,6 +676,42 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             oldListViewProcessesProc = (WNDPROC)SetWindowLongPtr(hListViewProcesses, GWLP_WNDPROC, (LONG_PTR)ListViewProc);    
 
             timerId = SetTimer(hwnd, TIMER_PROCESSES, updateInterval, NULL);
+
+            hProgressBarCPU = CreateWindowEx(0, PROGRESS_CLASS, L"",
+                WS_CHILD | PBS_SMOOTH,
+                10, 50, 300, 25, hTabControl, (HMENU)IDC_PROGRESSBAR_CPU, 
+                (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
+
+            SendMessage(hProgressBarCPU, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
+
+            hProgressBarRAM = CreateWindowEx(0, PROGRESS_CLASS, L"",
+                    WS_CHILD | PBS_SMOOTH,
+                    SCREEN_WIDTH - 340, 50, 300, 25, hTabControl, (HMENU)IDC_PROGRESSBAR_RAM, 
+                    (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
+
+            hLabelCPU = CreateWindowEx(0, WC_STATIC, L"",
+            WS_CHILD,
+            10, 100, 150, 20, hTabControl, NULL, 
+            (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
+
+                hLabelRAM = CreateWindowEx(0, WC_STATIC, L"",
+                    WS_CHILD,
+                    SCREEN_WIDTH - 340, 100, 150, 20, hTabControl, NULL, 
+                    (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
+
+                hLabelUptime = CreateWindowEx(0, WC_STATIC, L"",
+                    WS_CHILD,
+                    SCREEN_WIDTH / 2 - 150, 50, 300, 20, hTabControl, NULL, 
+                    (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);    
+
+                hLabelMemoryInfo = CreateWindowEx(0, WC_STATIC, L"",
+                WS_CHILD,
+                SCREEN_WIDTH / 2 - 150, 75, 300, 40, hTabControl, NULL, 
+                (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
+
+            SendMessage(hProgressBarRAM, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
+                
+            SetTimer(hwnd, TIMER_GRAPH, 1000, NULL);
         }
         break;
 
@@ -550,6 +720,24 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             if (wParam == TIMER_PROCESSES)
             {
                 PopulateProcessListView(hListViewProcesses, iconMap);
+            }
+                
+            if (wParam == TIMER_GRAPH)
+            {
+                int cpuUsage = GetCurrentCPUUsage(sysInfo, CurrentSysProcTimes, PreviousSysProcTimes, ZwQuerySystemInformation);
+                int ramUsage = GetCurrentRAMUsage();
+
+                SendMessage(hProgressBarCPU, PBM_SETPOS, cpuUsage, 0);
+                SendMessage(hProgressBarRAM, PBM_SETPOS, ramUsage, 0);
+
+                std::wstring pcTime = GetSystemUptime();
+                std::wstring cpuLabel = L"Загрузка ЦП: " + std::to_wstring(cpuUsage) + L"%";
+                std::wstring ramLabel = L"Загрузка Памяти: " + std::to_wstring(ramUsage) + L"%";
+
+                SetWindowText(hLabelCPU, cpuLabel.c_str());
+                SetWindowText(hLabelRAM, ramLabel.c_str());
+                SetWindowText(hLabelUptime, pcTime.c_str());
+                SetWindowText(hLabelMemoryInfo, GetMemoryInfo().c_str());
             }    
         }
 
@@ -580,11 +768,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                 if (nmhdr->hwndFrom == hTabControl && nmhdr->code == TCN_SELCHANGE) {
                     int tabIndex = TabCtrl_GetCurSel(hTabControl);
                     ShowWindow(hListViewProcesses, tabIndex == 0 ? SW_SHOW : SW_HIDE);
-
-                    if (tabIndex == 0)
-                    {
-                        PopulateProcessListView(hListViewProcesses, iconMap);
-                    }
+                    ShowWindow(hProgressBarCPU, tabIndex == 1 ? SW_SHOW : SW_HIDE);
+                    ShowWindow(hProgressBarRAM, tabIndex == 1 ? SW_SHOW : SW_HIDE);
+                    ShowWindow(hLabelUptime, tabIndex == 1 ? SW_SHOW : SW_HIDE);
+                    ShowWindow(hLabelMemoryInfo, tabIndex == 1 ? SW_SHOW :  SW_HIDE);
+                    ShowWindow(hLabelCPU, tabIndex == 1 ? SW_SHOW : SW_HIDE);
+                    ShowWindow(hLabelRAM, tabIndex == 1 ? SW_SHOW : SW_HIDE);
                 }
 
                 if (nmhdr->hwndFrom == hListViewProcesses && nmhdr->code == LVN_COLUMNCLICK)
@@ -627,26 +816,31 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                     MessageBox(hwnd, L"Task Manager App\nDeveloped by Krutko Andrey\nBSUIR 2024", L"About", MB_OK | MB_ICONINFORMATION);
                 }
                 break;
+                case ID_MENU_UPDATE:
+                {
+                    PopulateProcessListView(hListViewProcesses, iconMap);
+                }
+                break;
+            
+                case ID_MENU_RARE:
+                    updateInterval = 5000;
+                    break;
+                case ID_MENU_NORMAL:
+                    updateInterval = 3000;
+                    break;
+                case ID_MENU_OFTEN:
+                    updateInterval = 1000;
+                    break;
+                case ID_MENU_NONE:
+                    KillTimer(hwnd, TIMER_PROCESSES);
+                    timerId = 0;
+                    return 0;
+                }
 
-            case ID_MENU_RARE:
-                updateInterval = 5000;
-                break;
-            case ID_MENU_NORMAL:
-                updateInterval = 3000;
-                break;
-            case ID_MENU_OFTEN:
-                updateInterval = 1000;
-                break;
-            case ID_MENU_NONE:
-                KillTimer(hwnd, TIMER_PROCESSES);
-                timerId = 0;
-                return 0;
-            }
-
-            if (timerId) {
-                KillTimer(hwnd, TIMER_PROCESSES);
-            }
-            timerId = SetTimer(hwnd, TIMER_PROCESSES, updateInterval, NULL);
+                if (timerId) {
+                    KillTimer(hwnd, TIMER_PROCESSES);
+                }
+                timerId = SetTimer(hwnd, TIMER_PROCESSES, updateInterval, NULL);
         }
         break;
         
@@ -669,6 +863,13 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         
     case WM_DESTROY:
     {
+        if (lib) {
+            FreeLibrary(lib);
+        }
+            
+        delete[] CurrentSysProcTimes;
+        delete[] PreviousSysProcTimes;
+            
         KillTimer(hwnd, TIMER_PROCESSES);
         HIMAGELIST hImageList = ListView_GetImageList(hListViewProcesses, LVSIL_SMALL);
         if (hImageList) ImageList_Destroy(hImageList);
