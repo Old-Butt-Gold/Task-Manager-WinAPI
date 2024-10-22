@@ -44,6 +44,8 @@
 #include <set>
 #include <fstream>
 #include <vector>
+#include <gdiplus.h>
+#pragma comment(lib, "gdiplus.lib")
 
 
 #define ProcessListViewX 10
@@ -220,8 +222,6 @@ LRESULT CALLBACK ListViewProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
                         pnmhHeader->pitem->cxy = 30;
                     }
                 }
-                
-                break;
             }
 
         default:
@@ -338,7 +338,7 @@ std::wstring GetMemoryUsage(HANDLE hProcess) {
 HWND CreateProcessListView(HWND hParent) {
     HWND hListView = CreateWindowEx(0, WC_LISTVIEW, NULL,
         WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
-        ProcessListViewX, ProcessListViewY, SCREEN_WIDTH - 40, SCREEN_HEIGHT - 100,
+        ProcessListViewX, ProcessListViewY, SCREEN_WIDTH - 40, SCREEN_HEIGHT - 70,
         hParent, (HMENU)IDC_LISTVIEW_PROCESSES, (HINSTANCE)GetWindowLongPtr(hParent, GWLP_HINSTANCE), NULL);
 
     LVCOLUMN lvColumn;
@@ -352,7 +352,7 @@ HWND CreateProcessListView(HWND hParent) {
     
     DestroyIcon(hIcon);
     ListView_SetImageList(hListView, hImageList, LVSIL_SMALL);
-    ListView_SetExtendedListViewStyle(hListView, LVS_EX_FULLROWSELECT| LVS_EX_HEADERDRAGDROP | LVS_EX_DOUBLEBUFFER);
+    ListView_SetExtendedListViewStyle(hListView, LVS_EX_FULLROWSELECT | LVS_EX_HEADERDRAGDROP | LVS_EX_DOUBLEBUFFER);
 
     const std::wstring columnHeaders[] = {
         L"Имя процесса", L"ID процесса", L"ID родительского процесса", L"Приоритет",
@@ -544,7 +544,7 @@ int GetCurrentCPUUsage(SYSTEM_INFO sysInfo, SYSTEM_PROCESSOR_TIMES* CurrentSysPr
     SYSTEM_PROCESSOR_TIMES* PreviousSysProcTimes,
     ZwQuerySystemInformationFunc ZwQuerySystemInformation)
 {
-    static DWORD oldTime = 0;
+    static DWORD oldTime = GetTickCount();
     DWORD nowTime = GetTickCount();
     DWORD perTime = nowTime - oldTime;
     oldTime = nowTime;
@@ -600,12 +600,73 @@ std::wstring GetMemoryInfo()
     return L"Ошибка получения информации о памяти";
 }
 
+void DrawGraph(HWND hPerfomance, std::vector<int>& history, const int maxHistory)
+{
+    HDC hdc = GetDC(hPerfomance);
+    RECT rect;
+    GetClientRect(hPerfomance, &rect);
+    
+    int width = rect.right - rect.left;
+    int height = rect.bottom - rect.top;
+
+    HBRUSH backgroundBrush = CreateSolidBrush(RGB(30, 30, 30));
+    FillRect(hdc, &rect, backgroundBrush);
+    DeleteObject(backgroundBrush);
+
+    SetBkMode(hdc, TRANSPARENT);
+    SetStretchBltMode(hdc, HALFTONE);
+                
+    HPEN gridPen = CreatePen(PS_DOT, 1, RGB(60, 60, 60));
+    SelectObject(hdc, gridPen);
+    for (int i = 1; i <= 10; ++i) {
+        int y = height - 20 - (height - 40) * i / 10;
+        MoveToEx(hdc, 0, y, NULL);
+        LineTo(hdc, width, y);
+    }
+
+    if (!history.empty()) {
+        HPEN graphPen = CreatePen(PS_SOLID, 2, RGB(0, 255, 127));
+        SelectObject(hdc, graphPen);
+
+        int spacing = width / maxHistory;
+        int prevX = 0;
+        int prevY = height - 20 - (history[0] * (height - 20) / 100);
+
+        for (size_t i = 1; i < history.size(); ++i) {
+            int x = i * spacing;
+            int y = height - 20 - (history[i] * (height - 20) / 100);
+
+            MoveToEx(hdc, prevX, prevY, NULL);
+            LineTo(hdc, x, y);
+
+            prevX = x;
+            prevY = y;
+        }
+        DeleteObject(graphPen);
+    }
+
+    DeleteObject(gridPen);
+    ReleaseDC(hPerfomance, hdc);
+}
+
+void PushValue(std::vector<int>& history, const int maxHistory, int newValue)
+{
+    history.push_back(newValue);
+    if (history.size() > maxHistory) {
+        history.erase(history.begin()); 
+    }
+}
+
+
+
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
     static HWND hTabControl, hListViewProcesses;
     static std::map<std::wstring, int> iconMap;
     static HWND hProgressBarCPU;
     static HWND hProgressBarRAM;
+
+    static HWND hPerfomanceCPU, hPerfomanceRAM;
 
     static UINT_PTR timerId = 0;  
     static int updateInterval = 1000;
@@ -617,6 +678,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
     
     static HWND hLabelCPU, hLabelRAM, hLabelUptime, hLabelMemoryInfo;
     static SYSTEM_INFO sysInfo;
+
+    static std::vector<int> cpuUsageHistory;
+    static std::vector<int> ramUsageHistory;
+    static const int cpuUsageHistoryMax = 100;
+    static const int ramUsageHistoryMax = 100;
     
     switch (uMsg)
     {
@@ -625,11 +691,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
         case WM_PAINT:
         {
-            PAINTSTRUCT ps;
-            HDC hdc = BeginPaint(hwnd, &ps);
-                
-            FillRect(hdc, &ps.rcPaint, (HBRUSH)(COLOR_WINDOW + 1));
-            EndPaint(hwnd, &ps);
+           PAINTSTRUCT ps;
+           HDC hdc = BeginPaint(hwnd, &ps);
+
+           HBRUSH darkBrush = CreateSolidBrush(RGB(43, 41, 55));
+           FillRect(hdc, &ps.rcPaint, darkBrush);
+           DeleteObject(darkBrush);
+
+           EndPaint(hwnd, &ps);
         }
         return 0;
 
@@ -664,8 +733,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             }     
 
             hTabControl = CreateWindowEx(0, WC_TABCONTROL, NULL,
-            WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
-                   TabControlX, TabControlY, SCREEN_WIDTH - 20, SCREEN_HEIGHT - 70,
+            WS_CHILD | WS_VISIBLE,
+                   TabControlX, TabControlY, SCREEN_WIDTH - 20, SCREEN_HEIGHT - 40,
                    hwnd, (HMENU)IDC_TABCONTROL, (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
 
             AddTabItems(hTabControl);
@@ -674,18 +743,16 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             hListViewProcesses = CreateProcessListView(hTabControl);
             PopulateProcessListView(hListViewProcesses, iconMap);
             oldListViewProcessesProc = (WNDPROC)SetWindowLongPtr(hListViewProcesses, GWLP_WNDPROC, (LONG_PTR)ListViewProc);    
-
-            timerId = SetTimer(hwnd, TIMER_PROCESSES, updateInterval, NULL);
-
+                
             hProgressBarCPU = CreateWindowEx(0, PROGRESS_CLASS, L"",
-                WS_CHILD | PBS_SMOOTH,
+                WS_CHILD | PBS_SMOOTH | PBS_MARQUEE,
                 10, 50, 300, 25, hTabControl, (HMENU)IDC_PROGRESSBAR_CPU, 
                 (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
 
             SendMessage(hProgressBarCPU, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
 
             hProgressBarRAM = CreateWindowEx(0, PROGRESS_CLASS, L"",
-                    WS_CHILD | PBS_SMOOTH,
+                    WS_CHILD | PBS_SMOOTH | PBS_MARQUEE,
                     SCREEN_WIDTH - 340, 50, 300, 25, hTabControl, (HMENU)IDC_PROGRESSBAR_RAM, 
                     (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
 
@@ -709,9 +776,19 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                 SCREEN_WIDTH / 2 - 150, 75, 300, 40, hTabControl, NULL, 
                 (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
 
+            hPerfomanceCPU = CreateWindowEx(0, WC_STATIC, L"", WS_CHILD,
+                10, 140, SCREEN_WIDTH / 2 - 50, SCREEN_HEIGHT * 0.65, hTabControl, NULL, (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
+
+            hPerfomanceRAM = CreateWindowEx(0, WC_STATIC, L"", WS_CHILD,
+                    SCREEN_WIDTH / 2, 140, SCREEN_WIDTH / 2 - 50, SCREEN_HEIGHT * 0.65, hTabControl, NULL, (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
+                      
             SendMessage(hProgressBarRAM, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
                 
+            SendMessage(hProgressBarCPU, PBM_SETBARCOLOR, 0, RGB(26, 188, 156));  // Синий прогрессбар
+            SendMessage(hProgressBarRAM, PBM_SETBARCOLOR, 0, RGB(26, 188, 156));  // Зелёный прогрессбар
+                
             SetTimer(hwnd, TIMER_GRAPH, 1000, NULL);
+            timerId = SetTimer(hwnd, TIMER_PROCESSES, updateInterval, NULL);
         }
         break;
 
@@ -726,7 +803,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             {
                 int cpuUsage = GetCurrentCPUUsage(sysInfo, CurrentSysProcTimes, PreviousSysProcTimes, ZwQuerySystemInformation);
                 int ramUsage = GetCurrentRAMUsage();
-
+                
                 SendMessage(hProgressBarCPU, PBM_SETPOS, cpuUsage, 0);
                 SendMessage(hProgressBarRAM, PBM_SETPOS, ramUsage, 0);
 
@@ -738,10 +815,17 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                 SetWindowText(hLabelRAM, ramLabel.c_str());
                 SetWindowText(hLabelUptime, pcTime.c_str());
                 SetWindowText(hLabelMemoryInfo, GetMemoryInfo().c_str());
+
+                
+                PushValue(cpuUsageHistory, cpuUsageHistoryMax, cpuUsage);
+                PushValue(ramUsageHistory, ramUsageHistoryMax, ramUsage);
+                
+                DrawGraph(hPerfomanceCPU, cpuUsageHistory, cpuUsageHistoryMax);
+                DrawGraph(hPerfomanceRAM, ramUsageHistory, ramUsageHistoryMax);
             }    
         }
 
-        case WM_DRAWITEM:
+        /*case WM_DRAWITEM:
         {
             LPDRAWITEMSTRUCT lpDrawItem = (LPDRAWITEMSTRUCT)lParam;
             if (lpDrawItem->CtlID == ID_SELECT_BTN)
@@ -749,7 +833,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
             }
             break;
-        }
+        }*/
 
         case WM_KEYDOWN:
         {
@@ -765,6 +849,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         case WM_NOTIFY:
             {
                 NMHDR* nmhdr = (NMHDR*)lParam;
+
                 if (nmhdr->hwndFrom == hTabControl && nmhdr->code == TCN_SELCHANGE) {
                     int tabIndex = TabCtrl_GetCurSel(hTabControl);
                     ShowWindow(hListViewProcesses, tabIndex == 0 ? SW_SHOW : SW_HIDE);
@@ -774,6 +859,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                     ShowWindow(hLabelMemoryInfo, tabIndex == 1 ? SW_SHOW :  SW_HIDE);
                     ShowWindow(hLabelCPU, tabIndex == 1 ? SW_SHOW : SW_HIDE);
                     ShowWindow(hLabelRAM, tabIndex == 1 ? SW_SHOW : SW_HIDE);
+                    ShowWindow(hPerfomanceCPU, tabIndex == 1 ? SW_SHOW : SW_HIDE);
+                    ShowWindow(hPerfomanceRAM, tabIndex == 1 ? SW_SHOW : SW_HIDE);
+
+                    if (tabIndex == 1)
+                    {
+                        DrawGraph(hPerfomanceCPU, cpuUsageHistory, cpuUsageHistoryMax);
+                        DrawGraph(hPerfomanceRAM, ramUsageHistory, ramUsageHistoryMax);
+                    }
                 }
 
                 if (nmhdr->hwndFrom == hListViewProcesses && nmhdr->code == LVN_COLUMNCLICK)
@@ -855,8 +948,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         {
             int width = LOWORD(lParam);
             int height = HIWORD(lParam);
-            MoveWindow(hTabControl, TabControlY, TabControlY, width - 20, height - 70, TRUE);
-            MoveWindow(hListViewProcesses, ProcessListViewX, ProcessListViewY, width - 40, height - 100, TRUE);
+            MoveWindow(hTabControl, TabControlY, TabControlY, width - 20, height - 40, TRUE);
+            MoveWindow(hListViewProcesses, ProcessListViewX, ProcessListViewY, width - 40, height - 70, TRUE);
 
             return 0;
         }
