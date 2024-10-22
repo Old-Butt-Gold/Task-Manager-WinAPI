@@ -45,6 +45,7 @@
 #include <fstream>
 #include <vector>
 #include <gdiplus.h>
+#include <Windows.h>
 #pragma comment(lib, "gdiplus.lib")
 
 
@@ -125,8 +126,6 @@ void HandleContextMenu(HWND hwnd, WPARAM wParam, LPARAM lParam) {
     DestroyMenu(hMenu);
 }
 
-WNDPROC oldListViewProcessesProc;
-
 void CloseProcessById(DWORD processId) {
     HANDLE hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, processId);
     if (hProcess) {
@@ -160,74 +159,6 @@ void OpenProcessLocation(DWORD processId) {
     } else {
         MessageBox(NULL, L"Не удалось открыть процесс для получения пути.", L"Ошибка", MB_OK | MB_ICONERROR);
     }
-}
-
-LRESULT CALLBACK ListViewProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
-    static int selectedItemIndex;
-    switch (uMsg)
-    {
-        case WM_COMMAND:
-            {
-                int wmId = LOWORD(wParam);
-                int wmEvent = HIWORD(wParam);
-
-                switch (wmId) 
-                {
-                    case IDM_CLOSE_PROCESS:
-                    {
-                       wchar_t buffer[32];
-                       ListView_GetItemText(hwnd, selectedItemIndex, 1, buffer, 32);
-                       DWORD processId = _wtoi(buffer);
-                       CloseProcessById(processId);
-                    }
-                    break;
-                    
-                    case IDM_OPEN_LOCATION:
-                    {
-                       wchar_t buffer[32];
-                       ListView_GetItemText(hwnd, selectedItemIndex, 1, buffer, 32);
-                       DWORD processId = _wtoi(buffer);
-                       OpenProcessLocation(processId);
-                    }
-                    break;
-                }
-            }
-            break;
-        
-            case WM_CONTEXTMENU: {
-                if ((HWND)wParam == hwnd)
-                {
-                    LVHITTESTINFO hitTestInfo = { 0 };
-                    POINT pt;
-                    GetCursorPos(&pt);
-                    ScreenToClient(hwnd, &pt);
-                    hitTestInfo.pt = pt;
-                    ListView_HitTest(hwnd, &hitTestInfo);
-                    selectedItemIndex = hitTestInfo.iItem;
-                    if (selectedItemIndex != -1)
-                    {
-                        HandleContextMenu(hwnd, wParam, lParam);
-                    }
-                }
-                break;
-            }
-
-        case WM_NOTIFY:
-            {
-                LPNMHDR nmhdr = (LPNMHDR)lParam;
-
-                if (nmhdr->code == HDN_ITEMCHANGING) {
-                    LPNMHEADER pnmhHeader = (LPNMHEADER)lParam;
-                    if (pnmhHeader->pitem->cxy < 30) {
-                        pnmhHeader->pitem->cxy = 30;
-                    }
-                }
-            }
-
-        default:
-            return CallWindowProc(oldListViewProcessesProc, hwnd, uMsg, wParam, lParam);
-    }
-    return CallWindowProc(oldListViewProcessesProc, hwnd, uMsg, wParam, lParam);
 }
 
 std::wstring GetPriority(DWORD processId)
@@ -378,37 +309,6 @@ HWND CreateProcessListView(HWND hParent) {
     return hListView;
 }
 
-/*std::wstring GetCpuUsage(HANDLE hProcess)
-{
-    if (hProcess)
-    {
-        FILETIME idleTime, kernelTime, userTime;
-        FILETIME creationTime, exitTime, processKernelTime, processUserTime;
-
-        GetSystemTimes(&idleTime, &kernelTime, &userTime);
-
-        GetProcessTimes(hProcess, &creationTime, &exitTime, &processKernelTime, &processUserTime);
-
-        ULARGE_INTEGER user, kernel;
-        user.LowPart = processUserTime.dwLowDateTime;
-        user.HighPart = processUserTime.dwHighDateTime;
-        kernel.LowPart = processKernelTime.dwLowDateTime;
-        kernel.HighPart = processKernelTime.dwHighDateTime;
-
-        ULONGLONG totalProcessTime = user.QuadPart + kernel.QuadPart;
-
-        ULARGE_INTEGER sys, idl;
-        sys.LowPart = userTime.dwLowDateTime + kernelTime.dwLowDateTime;
-        sys.HighPart = userTime.dwHighDateTime + kernelTime.dwHighDateTime;
-        idl.LowPart = idleTime.dwLowDateTime;
-        idl.HighPart = idleTime.dwHighDateTime;
-
-        double cpu = (totalProcessTime * 100.0) / (sys.QuadPart + idl.QuadPart);
-        return std::to_wstring(cpu * 100) + L"%";
-    }
-    return L"N/A";
-}*/
-
 int FindProcessInListViewByPID(HWND hListView, DWORD processID) {
     LVFINDINFO findInfo = { 0 };
     findInfo.flags = LVFI_PARAM;
@@ -427,7 +327,7 @@ void RemoveStaleProcesses(HWND hListView, const std::set<DWORD>& existingProcess
             DWORD processID = static_cast<DWORD>(lvi.lParam);
 
             if (existingProcesses.find(processID) == existingProcesses.end()) {
-                ListView_DeleteItem(hListView, i);  // Удаляем неактуальный процесс
+                ListView_DeleteItem(hListView, i);
             }
         }
     }
@@ -657,7 +557,152 @@ void PushValue(std::vector<int>& history, const int maxHistory, int newValue)
     }
 }
 
+LRESULT CALLBACK ListViewProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    static int selectedItemIndex;
+    switch (uMsg)
+    {
+            case WM_ERASEBKGND:
+                return 1;
+            case WM_COMMAND:
+            {
+                int wmId = LOWORD(wParam);
+                int wmEvent = HIWORD(wParam);
 
+                switch (wmId) 
+                {
+                    case IDM_CLOSE_PROCESS:
+                    {
+                       wchar_t buffer[32];
+                       ListView_GetItemText(hwnd, selectedItemIndex, 1, buffer, 32);
+                       DWORD processId = _wtoi(buffer);
+                       CloseProcessById(processId);
+                    }
+                    break;
+                    
+                    case IDM_OPEN_LOCATION:
+                    {
+                       wchar_t buffer[32];
+                       ListView_GetItemText(hwnd, selectedItemIndex, 1, buffer, 32);
+                       DWORD processId = _wtoi(buffer);
+                       OpenProcessLocation(processId);
+                    }
+                    break;
+                }
+            }
+            break;
+        
+            case WM_CONTEXTMENU: {
+                if ((HWND)wParam == hwnd)
+                {
+                    LVHITTESTINFO hitTestInfo = { 0 };
+                    POINT pt;
+                    GetCursorPos(&pt);
+                    ScreenToClient(hwnd, &pt);
+                    hitTestInfo.pt = pt;
+                    ListView_HitTest(hwnd, &hitTestInfo);
+                    selectedItemIndex = hitTestInfo.iItem;
+                    if (selectedItemIndex != -1)
+                    {
+                        HandleContextMenu(hwnd, wParam, lParam);
+                    }
+                }
+                break;
+            }
+
+        
+        case WM_NOTIFY:
+            {
+                LPNMHDR nmhdr = (LPNMHDR)lParam;
+
+                if (nmhdr->code == HDN_ITEMCHANGING) {
+                    LPNMHEADER pnmhHeader = (LPNMHEADER)lParam;
+                    if (pnmhHeader->pitem->cxy < 30) {
+                        pnmhHeader->pitem->cxy = 30;
+                    }
+                }
+
+                    if (nmhdr->code == NM_CUSTOMDRAW)
+                    {
+                        LPNMLVCUSTOMDRAW pLVCD = (LPNMLVCUSTOMDRAW)lParam;
+
+                        switch (pLVCD->nmcd.dwDrawStage)
+                        {
+                        case CDDS_PREPAINT:
+                            return CDRF_NOTIFYITEMDRAW;
+
+                        case CDDS_ITEMPREPAINT:
+                            
+                            SetTextColor(pLVCD->nmcd.hdc, RGB(255, 255, 255));
+                            if (pLVCD->nmcd.uItemState & CDIS_SELECTED)
+                            {
+                                SetBkColor(pLVCD->nmcd.hdc, RGB(26, 188, 156));
+                            }
+                            else
+                            {
+                                SetBkColor(pLVCD->nmcd.hdc, RGB(43, 41, 55));
+                            }
+                            return CDRF_DODEFAULT;
+
+                        case CDDS_POSTPAINT:
+                            return CDRF_DODEFAULT;
+
+                        }
+                    }
+            }
+            break;
+    
+        default:
+            return CallWindowProc((WNDPROC)GetWindowLongPtr(hwnd, GWLP_USERDATA), hwnd, uMsg, wParam, lParam);
+    }
+    return 0;
+}
+
+LRESULT CALLBACK TabControlProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+    switch (uMsg)
+    {
+            case WM_NOTIFY:
+            {
+                LPNMHDR pnmh = (LPNMHDR)lParam;
+                if (pnmh->code == NM_CUSTOMDRAW)
+                {
+                    LPNMLVCUSTOMDRAW pLVCD = (LPNMLVCUSTOMDRAW)lParam;
+                    switch (pLVCD->nmcd.dwDrawStage)
+                    {
+                    case CDDS_PREPAINT:
+                        return CDRF_NOTIFYITEMDRAW;
+
+                    case CDDS_ITEMPREPAINT:
+                        
+                        pLVCD->clrText = RGB(255, 255, 255);
+                        pLVCD->clrTextBk = RGB(57, 66, 100);
+                        return CDRF_DOERASE;
+
+                    default:
+                        break;
+                    }
+                }
+                break;
+            }
+
+            case WM_CTLCOLORSTATIC:
+            {
+                HDC hdcStatic = (HDC)wParam;
+                HWND hStatic = (HWND)lParam;
+
+                SetBkColor(hdcStatic, RGB(43, 41, 55));
+                SetTextColor(hdcStatic, RGB(255, 255, 255));
+
+                HBRUSH hBrush = CreateSolidBrush(RGB(43, 41, 55));
+                return (LONG_PTR)hBrush; 
+            }
+    
+    default:
+        return CallWindowProc((WNDPROC)GetWindowLongPtr(hwnd, GWLP_USERDATA), hwnd, uMsg, wParam, lParam);
+    }
+
+    return 0;
+}
 
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
@@ -680,10 +725,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
     static SYSTEM_INFO sysInfo;
 
     static std::vector<int> cpuUsageHistory;
-    static std::vector<int> ramUsageHistory;
     static const int cpuUsageHistoryMax = 100;
+    static std::vector<int> ramUsageHistory;
     static const int ramUsageHistoryMax = 100;
-    
+
     switch (uMsg)
     {
         case WM_ERASEBKGND:
@@ -701,7 +746,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
            EndPaint(hwnd, &ps);
         }
         return 0;
-
+    
         case WM_CREATE:
         {
             GetSystemInfo(&sysInfo);
@@ -730,19 +775,30 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                 FreeLibrary(lib);
                 PostQuitMessage(0);
                 return -1;
-            }     
+            }
 
             hTabControl = CreateWindowEx(0, WC_TABCONTROL, NULL,
-            WS_CHILD | WS_VISIBLE,
+            WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
                    TabControlX, TabControlY, SCREEN_WIDTH - 20, SCREEN_HEIGHT - 40,
                    hwnd, (HMENU)IDC_TABCONTROL, (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
 
+            WNDPROC oldTabControlProc = (WNDPROC)GetWindowLongPtr(hTabControl, GWLP_WNDPROC);
+            SetWindowLongPtr(hTabControl, GWLP_WNDPROC, (LONG_PTR)TabControlProc);
+            SetWindowLongPtr(hTabControl, GWLP_USERDATA, (LONG_PTR)oldTabControlProc);    
+
+            SetClassLongPtr(hTabControl, GCLP_HBRBACKGROUND, (LONG_PTR)CreateSolidBrush(RGB(43, 41, 55)));
+            
             AddTabItems(hTabControl);
             SetMenu(hwnd, CreateAppMenu());
 
             hListViewProcesses = CreateProcessListView(hTabControl);
+
             PopulateProcessListView(hListViewProcesses, iconMap);
-            oldListViewProcessesProc = (WNDPROC)SetWindowLongPtr(hListViewProcesses, GWLP_WNDPROC, (LONG_PTR)ListViewProc);    
+            SetClassLongPtr(hListViewProcesses, GCLP_HBRBACKGROUND, (LONG_PTR)CreateSolidBrush(RGB(57, 66, 100)));
+            ListView_SetBkColor(hListViewProcesses, RGB(43, 41, 55));
+                
+            WNDPROC oldListViewProcessesProc = (WNDPROC)SetWindowLongPtr(hListViewProcesses, GWLP_WNDPROC, (LONG_PTR)ListViewProc);
+            SetWindowLongPtr(hListViewProcesses, GWLP_USERDATA, (LONG_PTR)oldListViewProcessesProc);
                 
             hProgressBarCPU = CreateWindowEx(0, PROGRESS_CLASS, L"",
                 WS_CHILD | PBS_SMOOTH | PBS_MARQUEE,
@@ -750,12 +806,16 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                 (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
 
             SendMessage(hProgressBarCPU, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
+            SetClassLongPtr(hProgressBarCPU, GCLP_HBRBACKGROUND, (LONG_PTR)CreateSolidBrush(RGB(43, 41, 55)));
 
             hProgressBarRAM = CreateWindowEx(0, PROGRESS_CLASS, L"",
                     WS_CHILD | PBS_SMOOTH | PBS_MARQUEE,
                     SCREEN_WIDTH - 340, 50, 300, 25, hTabControl, (HMENU)IDC_PROGRESSBAR_RAM, 
                     (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
 
+            SendMessage(hProgressBarRAM, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
+            SetClassLongPtr(hProgressBarCPU, GCLP_HBRBACKGROUND, (LONG_PTR)CreateSolidBrush(RGB(43, 41, 55)));
+                
             hLabelCPU = CreateWindowEx(0, WC_STATIC, L"",
             WS_CHILD,
             10, 100, 150, 20, hTabControl, NULL, 
@@ -782,10 +842,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             hPerfomanceRAM = CreateWindowEx(0, WC_STATIC, L"", WS_CHILD,
                     SCREEN_WIDTH / 2, 140, SCREEN_WIDTH / 2 - 50, SCREEN_HEIGHT * 0.65, hTabControl, NULL, (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
                       
-            SendMessage(hProgressBarRAM, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
-                
-            SendMessage(hProgressBarCPU, PBM_SETBARCOLOR, 0, RGB(26, 188, 156));  // Синий прогрессбар
-            SendMessage(hProgressBarRAM, PBM_SETBARCOLOR, 0, RGB(26, 188, 156));  // Зелёный прогрессбар
+            SendMessage(hProgressBarCPU, PBM_SETBARCOLOR, 0, RGB(26, 188, 156));
+            SendMessage(hProgressBarRAM, PBM_SETBARCOLOR, 0, RGB(26, 188, 156));
                 
             SetTimer(hwnd, TIMER_GRAPH, 1000, NULL);
             timerId = SetTimer(hwnd, TIMER_PROCESSES, updateInterval, NULL);
@@ -815,7 +873,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                 SetWindowText(hLabelRAM, ramLabel.c_str());
                 SetWindowText(hLabelUptime, pcTime.c_str());
                 SetWindowText(hLabelMemoryInfo, GetMemoryInfo().c_str());
-
                 
                 PushValue(cpuUsageHistory, cpuUsageHistoryMax, cpuUsage);
                 PushValue(ramUsageHistory, ramUsageHistoryMax, ramUsage);
@@ -846,6 +903,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         }
         break;
 
+        
         case WM_NOTIFY:
             {
                 NMHDR* nmhdr = (NMHDR*)lParam;
@@ -861,12 +919,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                     ShowWindow(hLabelRAM, tabIndex == 1 ? SW_SHOW : SW_HIDE);
                     ShowWindow(hPerfomanceCPU, tabIndex == 1 ? SW_SHOW : SW_HIDE);
                     ShowWindow(hPerfomanceRAM, tabIndex == 1 ? SW_SHOW : SW_HIDE);
-
-                    if (tabIndex == 1)
-                    {
-                        DrawGraph(hPerfomanceCPU, cpuUsageHistory, cpuUsageHistoryMax);
-                        DrawGraph(hPerfomanceRAM, ramUsageHistory, ramUsageHistoryMax);
-                    }
                 }
 
                 if (nmhdr->hwndFrom == hListViewProcesses && nmhdr->code == LVN_COLUMNCLICK)
@@ -892,6 +944,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             }    
             break;
 
+        
+        
         case WM_COMMAND:
         {
             int wmId = LOWORD(wParam);
@@ -971,6 +1025,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         PostQuitMessage(0);
     }
     return 0;
+    
 
     default:
         return DefWindowProc(hwnd, uMsg, wParam, lParam);
