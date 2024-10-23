@@ -48,7 +48,7 @@
 #pragma comment(lib, "gdiplus.lib")
 
 
-#define ProcessListViewX 10
+#define ProcessListViewX 0
 #define ProcessListViewY 25
 
 #define TabControlX 10
@@ -107,6 +107,7 @@ void AddTabItems(HWND hTab) {
 
     tie.pszText = (LPWSTR)L"Автозагрузка";
     tie.iImage = 0;
+    
     TabCtrl_InsertItem(hTab, 2, &tie);
 }
 
@@ -660,7 +661,16 @@ LRESULT CALLBACK ListViewProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
 
                         case CDDS_ITEMPREPAINT:
                             {
-                                SetBkColor(lpNMCustomDraw->hdc, RGB(47, 45, 60));
+                                COLORREF rgb;
+                                if (lpNMCustomDraw->uItemState & CDIS_SELECTED)
+                                {
+                                    rgb = RGB(26, 188, 156);  // Цвет фона для выделенного элемента
+                                }
+                                else
+                                {
+                                    rgb = RGB(47, 45, 60);   // Цвет фона для обычных элементов
+                                }
+                                SetBkColor(lpNMCustomDraw->hdc, rgb);
                                 SetTextColor(lpNMCustomDraw->hdc, RGB(255, 255, 255));
 
                                 RECT rc = lpNMCustomDraw->rc;
@@ -669,12 +679,9 @@ LRESULT CALLBACK ListViewProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
                                 DeleteObject(hBrush);
 
                                 RECT textRect = rc;
-                                textRect.bottom--;
-                                textRect.left++;
-                                textRect.right--;
-                                textRect.top++;
+                                InflateRect(&textRect, -1, -1);
 
-                                hBrush = CreateSolidBrush(RGB(47, 45, 60));
+                                hBrush = CreateSolidBrush(rgb);
                                 FillRect(lpNMCustomDraw->hdc, &textRect, hBrush);
                                 DeleteObject(hBrush);
                                 
@@ -718,7 +725,6 @@ LRESULT CALLBACK TabControlProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
                     return CDRF_NOTIFYITEMDRAW;
  
                 case CDDS_ITEMPREPAINT:
- 
                     pLVCD->clrText = RGB(255, 255, 255);
                     pLVCD->clrTextBk = RGB(57, 66, 100);
                     return CDRF_DODEFAULT;
@@ -741,6 +747,7 @@ LRESULT CALLBACK TabControlProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
             HBRUSH hBrush = CreateSolidBrush(RGB(43, 41, 55));
             return (LONG_PTR)hBrush; 
         }
+        
  
     default:
         return CallWindowProc((WNDPROC)GetWindowLongPtr(hwnd, GWLP_USERDATA), hwnd, uMsg, wParam, lParam);
@@ -777,6 +784,34 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
     {
         case WM_ERASEBKGND:
             return 1;
+
+    case WM_DRAWITEM:
+        {
+            LPDRAWITEMSTRUCT lpDrawItem = (LPDRAWITEMSTRUCT)lParam;
+            if (lpDrawItem->CtlID == IDC_TABCONTROL)
+            {
+                TCHAR szTabText[256];
+                TCITEM tci;
+                tci.mask = TCIF_TEXT;
+                tci.pszText = szTabText;
+                tci.cchTextMax = sizeof(szTabText) / sizeof(TCHAR);
+                TabCtrl_GetItem(hTabControl, lpDrawItem->itemID, &tci);
+
+                RECT rcTab = lpDrawItem->rcItem;
+
+                HBRUSH hBrush = CreateSolidBrush((lpDrawItem->itemState & ODS_SELECTED) ? 
+                    RGB(57, 66, 100) : RGB(43, 41, 55));
+                FillRect(lpDrawItem->hDC, &rcTab, hBrush);
+                DeleteObject(hBrush);
+
+                SetTextColor(lpDrawItem->hDC, RGB(255, 255, 255));
+                SetBkMode(lpDrawItem->hDC, TRANSPARENT);
+                DrawText(lpDrawItem->hDC, szTabText, -1, &lpDrawItem->rcItem,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+                return TRUE;
+            }
+        }
 
         case WM_PAINT:
         {
@@ -821,8 +856,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                 return -1;
             }     
 
-            hTabControl = CreateWindowEx(0, WC_TABCONTROL, NULL,
-            WS_CHILD | WS_VISIBLE | TCS_OWNERDRAWFIXED,
+            hTabControl = CreateWindowEx(WS_EX_TRANSPARENT, WC_TABCONTROL, NULL,
+            WS_CHILD | WS_VISIBLE | TCS_BUTTONS | TCS_OWNERDRAWFIXED,
                    TabControlX, TabControlY, SCREEN_WIDTH - 20, SCREEN_HEIGHT - 40,
                    hwnd, (HMENU)IDC_TABCONTROL, (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
 
