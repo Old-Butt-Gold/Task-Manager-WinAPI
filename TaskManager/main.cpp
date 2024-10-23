@@ -24,6 +24,7 @@
 #define IDC_PROGRESSBAR_CPU 0x7010
 #define IDC_PROGRESSBAR_RAM 0x8010
 
+
 #define IDM_CLOSE_PROCESS 0x5011
 #define IDM_OPEN_LOCATION 0x5012
 
@@ -44,7 +45,6 @@
 #include <set>
 #include <fstream>
 #include <vector>
-#include <gdiplus.h>
 #pragma comment(lib, "gdiplus.lib")
 
 
@@ -104,11 +104,6 @@ void AddTabItems(HWND hTab) {
     tie.pszText = (LPWSTR)L"Производительность";
     tie.iImage = 1;
     TabCtrl_InsertItem(hTab, 1, &tie);
-
-    tie.pszText = (LPWSTR)L"Автозагрузка";
-    tie.iImage = 0;
-    
-    TabCtrl_InsertItem(hTab, 2, &tie);
 }
 
 HMENU CreateContextMenu() {
@@ -571,7 +566,7 @@ void PushValue(std::vector<int>& history, const int maxHistory, int newValue)
     }
 }
 
-LRESULT CALLBACK ListViewProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+LRESULT CALLBACK ProcessListViewProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     static int selectedItemIndex;
     switch (uMsg)
     {
@@ -847,7 +842,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             WNDPROC oldTabControlProc = (WNDPROC)GetWindowLongPtr(hTabControl, GWLP_WNDPROC);
             SetWindowLongPtr(hTabControl, GWLP_WNDPROC, (LONG_PTR)TabControlProc);
             SetWindowLongPtr(hTabControl, GWLP_USERDATA, (LONG_PTR)oldTabControlProc);    
-                
+            
             SetClassLongPtr(hTabControl, GCLP_HBRBACKGROUND, (LONG_PTR)CreateSolidBrush(RGB(43, 41, 55)));
 
             AddTabItems(hTabControl);
@@ -857,7 +852,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             PopulateProcessListView(hListViewProcesses, iconMap);
             ListView_SetBkColor(hListViewProcesses, RGB(57, 66, 100));
                 
-            WNDPROC oldListViewProcessesProc = (WNDPROC)SetWindowLongPtr(hListViewProcesses, GWLP_WNDPROC, (LONG_PTR)ListViewProc);
+            WNDPROC oldListViewProcessesProc = (WNDPROC)SetWindowLongPtr(hListViewProcesses, GWLP_WNDPROC, (LONG_PTR)ProcessListViewProc);
             SetWindowLongPtr(hListViewProcesses, GWLP_USERDATA, (LONG_PTR)oldListViewProcessesProc);
                 
             hProgressBarCPU = CreateWindowEx(0, PROGRESS_CLASS, L"",
