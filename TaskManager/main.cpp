@@ -309,37 +309,6 @@ HWND CreateProcessListView(HWND hParent) {
     return hListView;
 }
 
-/*std::wstring GetCpuUsage(HANDLE hProcess)
-{
-    if (hProcess)
-    {
-        FILETIME idleTime, kernelTime, userTime;
-        FILETIME creationTime, exitTime, processKernelTime, processUserTime;
-
-        GetSystemTimes(&idleTime, &kernelTime, &userTime);
-
-        GetProcessTimes(hProcess, &creationTime, &exitTime, &processKernelTime, &processUserTime);
-
-        ULARGE_INTEGER user, kernel;
-        user.LowPart = processUserTime.dwLowDateTime;
-        user.HighPart = processUserTime.dwHighDateTime;
-        kernel.LowPart = processKernelTime.dwLowDateTime;
-        kernel.HighPart = processKernelTime.dwHighDateTime;
-
-        ULONGLONG totalProcessTime = user.QuadPart + kernel.QuadPart;
-
-        ULARGE_INTEGER sys, idl;
-        sys.LowPart = userTime.dwLowDateTime + kernelTime.dwLowDateTime;
-        sys.HighPart = userTime.dwHighDateTime + kernelTime.dwHighDateTime;
-        idl.LowPart = idleTime.dwLowDateTime;
-        idl.HighPart = idleTime.dwHighDateTime;
-
-        double cpu = (totalProcessTime * 100.0) / (sys.QuadPart + idl.QuadPart);
-        return std::to_wstring(cpu * 100) + L"%";
-    }
-    return L"N/A";
-}*/
-
 int FindProcessInListViewByPID(HWND hListView, DWORD processID) {
     LVFINDINFO findInfo = { 0 };
     findInfo.flags = LVFI_PARAM;
@@ -471,6 +440,8 @@ typedef NTSTATUS (NTAPI *ZwQuerySystemInformationFunc)(
     PULONG ReturnLength
 );
 
+#define SystemProcessorTimesCLASS 8
+
 int GetCurrentCPUUsage(SYSTEM_INFO sysInfo, SYSTEM_PROCESSOR_TIMES* CurrentSysProcTimes,
     SYSTEM_PROCESSOR_TIMES* PreviousSysProcTimes,
     ZwQuerySystemInformationFunc ZwQuerySystemInformation)
@@ -480,7 +451,7 @@ int GetCurrentCPUUsage(SYSTEM_INFO sysInfo, SYSTEM_PROCESSOR_TIMES* CurrentSysPr
     DWORD perTime = nowTime - oldTime;
     oldTime = nowTime;
 
-    ZwQuerySystemInformation(sysInfo.dwNumberOfProcessors, &CurrentSysProcTimes[0], sizeof(SYSTEM_PROCESSOR_TIMES) * sysInfo.dwNumberOfProcessors, nullptr);
+    ZwQuerySystemInformation(SystemProcessorTimesCLASS, &CurrentSysProcTimes[0], sizeof(SYSTEM_PROCESSOR_TIMES) * sysInfo.dwNumberOfProcessors, nullptr);
 
     ULONGLONG totalIdleTime = 0;
     for (int j = 0; j < sysInfo.dwNumberOfProcessors; j++) {
@@ -536,28 +507,34 @@ void DrawGraph(HWND hPerfomance, std::vector<int>& history, const int maxHistory
     HDC hdc = GetDC(hPerfomance);
     RECT rect;
     GetClientRect(hPerfomance, &rect);
-    
+
     int width = rect.right - rect.left;
     int height = rect.bottom - rect.top;
 
+    HDC memDC = CreateCompatibleDC(hdc);
+    
+    HBITMAP memBitmap = CreateCompatibleBitmap(hdc, width, height);
+    
+    HBITMAP oldBitmap = (HBITMAP)SelectObject(memDC, memBitmap);
+
     HBRUSH backgroundBrush = CreateSolidBrush(RGB(30, 30, 30));
-    FillRect(hdc, &rect, backgroundBrush);
+    FillRect(memDC, &rect, backgroundBrush);
     DeleteObject(backgroundBrush);
 
-    SetBkMode(hdc, TRANSPARENT);
-    SetStretchBltMode(hdc, HALFTONE);
-                
+    SetBkMode(memDC, TRANSPARENT);
+    SetStretchBltMode(memDC, HALFTONE);
+
     HPEN gridPen = CreatePen(PS_DOT, 1, RGB(60, 60, 60));
-    SelectObject(hdc, gridPen);
+    SelectObject(memDC, gridPen);
     for (int i = 1; i <= 10; ++i) {
         int y = height - 20 - (height - 40) * i / 10;
-        MoveToEx(hdc, 0, y, NULL);
-        LineTo(hdc, width, y);
+        MoveToEx(memDC, 0, y, NULL);
+        LineTo(memDC, width, y);
     }
 
     if (!history.empty()) {
         HPEN graphPen = CreatePen(PS_SOLID, 2, RGB(0, 255, 127));
-        SelectObject(hdc, graphPen);
+        SelectObject(memDC, graphPen);
 
         int spacing = width / maxHistory;
         int prevX = 0;
@@ -567,8 +544,8 @@ void DrawGraph(HWND hPerfomance, std::vector<int>& history, const int maxHistory
             int x = i * spacing;
             int y = height - 20 - (history[i] * (height - 20) / 100);
 
-            MoveToEx(hdc, prevX, prevY, NULL);
-            LineTo(hdc, x, y);
+            MoveToEx(memDC, prevX, prevY, NULL);
+            LineTo(memDC, x, y);
 
             prevX = x;
             prevY = y;
@@ -577,6 +554,12 @@ void DrawGraph(HWND hPerfomance, std::vector<int>& history, const int maxHistory
     }
 
     DeleteObject(gridPen);
+    
+    BitBlt(hdc, 0, 0, width, height, memDC, 0, 0, SRCCOPY);
+
+    SelectObject(memDC, oldBitmap);
+    DeleteObject(memBitmap);
+    DeleteDC(memDC);
     ReleaseDC(hPerfomance, hdc);
 }
 
@@ -785,7 +768,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         case WM_ERASEBKGND:
             return 1;
 
-    case WM_DRAWITEM:
+        case WM_DRAWITEM:
         {
             LPDRAWITEMSTRUCT lpDrawItem = (LPDRAWITEMSTRUCT)lParam;
             if (lpDrawItem->CtlID == IDC_TABCONTROL)
@@ -849,7 +832,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                 return -1;
             }
 
-            if (ZwQuerySystemInformation(sysInfo.dwNumberOfProcessors, &PreviousSysProcTimes[0], sizeof(SYSTEM_PROCESSOR_TIMES) * sysInfo.dwNumberOfProcessors, nullptr) != 0) {
+            if (ZwQuerySystemInformation(SystemProcessorTimesCLASS, &PreviousSysProcTimes[0], sizeof(SYSTEM_PROCESSOR_TIMES) * sysInfo.dwNumberOfProcessors, nullptr) != 0) {
                 MessageBox(NULL, L"Не удалось получить данные о процессорах", L"Ошибка", MB_OK | MB_ICONERROR);
                 FreeLibrary(lib);
                 PostQuitMessage(0);
@@ -881,7 +864,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                 WS_CHILD | PBS_SMOOTH | PBS_MARQUEE,
                 10, 50, 300, 25, hTabControl, (HMENU)IDC_PROGRESSBAR_CPU, 
                 (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
-
+                
             SendMessage(hProgressBarCPU, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
             SetClassLongPtr(hProgressBarCPU, GCLP_HBRBACKGROUND, (LONG_PTR)CreateSolidBrush(RGB(43, 41, 55)));
                 
@@ -921,7 +904,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             SendMessage(hProgressBarCPU, PBM_SETBARCOLOR, 0, RGB(26, 188, 156));  // Синий прогрессбар
             SendMessage(hProgressBarRAM, PBM_SETBARCOLOR, 0, RGB(26, 188, 156));  // Зелёный прогрессбар
                 
-            SetTimer(hwnd, TIMER_GRAPH, 1000, NULL);
+            SetTimer(hwnd, TIMER_GRAPH, 50, NULL);
             timerId = SetTimer(hwnd, TIMER_PROCESSES, updateInterval, NULL);
         }
         break;
@@ -935,24 +918,29 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                 
             if (wParam == TIMER_GRAPH)
             {
-                int cpuUsage = GetCurrentCPUUsage(sysInfo, CurrentSysProcTimes, PreviousSysProcTimes, ZwQuerySystemInformation);
-                int ramUsage = GetCurrentRAMUsage();
+                static int counter = 0;
+                if (counter >= 20)
+                {
+                    counter = 0;
+                    int cpuUsage = GetCurrentCPUUsage(sysInfo, CurrentSysProcTimes, PreviousSysProcTimes, ZwQuerySystemInformation);
+                    int ramUsage = GetCurrentRAMUsage();
                 
-                SendMessage(hProgressBarCPU, PBM_SETPOS, cpuUsage, 0);
-                SendMessage(hProgressBarRAM, PBM_SETPOS, ramUsage, 0);
+                    SendMessage(hProgressBarCPU, PBM_SETPOS, cpuUsage, 0);
+                    SendMessage(hProgressBarRAM, PBM_SETPOS, ramUsage, 0);
 
-                std::wstring pcTime = GetSystemUptime();
-                std::wstring cpuLabel = L"Загрузка ЦП: " + std::to_wstring(cpuUsage) + L"%";
-                std::wstring ramLabel = L"Загрузка Памяти: " + std::to_wstring(ramUsage) + L"%";
+                    std::wstring pcTime = GetSystemUptime();
+                    std::wstring cpuLabel = L"Загрузка ЦП: " + std::to_wstring(cpuUsage) + L"%";
+                    std::wstring ramLabel = L"Загрузка Памяти: " + std::to_wstring(ramUsage) + L"%";
 
-                SetWindowText(hLabelCPU, cpuLabel.c_str());
-                SetWindowText(hLabelRAM, ramLabel.c_str());
-                SetWindowText(hLabelUptime, pcTime.c_str());
-                SetWindowText(hLabelMemoryInfo, GetMemoryInfo().c_str());
-
-                
-                PushValue(cpuUsageHistory, cpuUsageHistoryMax, cpuUsage);
-                PushValue(ramUsageHistory, ramUsageHistoryMax, ramUsage);
+                    SetWindowText(hLabelCPU, cpuLabel.c_str());
+                    SetWindowText(hLabelRAM, ramLabel.c_str());
+                    SetWindowText(hLabelUptime, pcTime.c_str());
+                    SetWindowText(hLabelMemoryInfo, GetMemoryInfo().c_str());
+                    
+                    PushValue(cpuUsageHistory, cpuUsageHistoryMax, cpuUsage);
+                    PushValue(ramUsageHistory, ramUsageHistoryMax, ramUsage);
+                } else
+                counter++;
                 
                 DrawGraph(hPerfomanceCPU, cpuUsageHistory, cpuUsageHistoryMax);
                 DrawGraph(hPerfomanceRAM, ramUsageHistory, ramUsageHistoryMax);
