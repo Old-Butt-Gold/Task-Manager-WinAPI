@@ -2,14 +2,12 @@
 #define UNICODE
 #endif
 
-#pragma comment(lib, "Comctl32.lib")
-#pragma comment(lib, "Psapi.lib")
-
 #define MainName L"Task Manager"
+#define TaskName L"Run Task"
+
 #define SCREEN_WIDTH  GetSystemMetrics(SM_CXSCREEN)
 #define SCREEN_HEIGHT GetSystemMetrics(SM_CYSCREEN)
 
-#define ID_SELECT_BTN 0x1010
 #define ID_MENU_RUN_TASK 0x2010
 #define ID_MENU_EXIT 0x2011
 #define ID_MENU_ABOUT 0x2012
@@ -23,13 +21,19 @@
 #define IDC_LISTVIEW_PROCESSES 0x6010
 #define IDC_PROGRESSBAR_CPU 0x7010
 #define IDC_PROGRESSBAR_RAM 0x8010
-
-
 #define IDM_CLOSE_PROCESS 0x5011
 #define IDM_OPEN_LOCATION 0x5012
 
 #define TIMER_PROCESSES 0x1
 #define TIMER_GRAPH 0x2
+
+#define IDC_CREATETASKWINDOW 0x9010
+
+#define IDC_EDIT_TASK 0x9011
+#define IDC_CHECK_ADMIN 0x9012
+#define IDC_BTN_OK 0x9013
+#define IDC_BTN_CANCEL 0x9014
+#define IDC_BTN_BROWSE 0x9015
 
 #include <Windows.h>
 #include <iomanip>
@@ -44,15 +48,68 @@
 #include <sstream>
 #include <set>
 #include <fstream>
+#include <shlobj.h>
 #include <vector>
-#pragma comment(lib, "gdiplus.lib")
+#include <shlwapi.h>
+#include "dwmapi.h"
 
+#pragma comment(lib, "gdiplus.lib")
+#pragma comment(lib, "Comctl32.lib")
+#pragma comment(lib, "Psapi.lib")
+#pragma comment(lib, "shlwapi.lib")
+#pragma comment(lib, "dwmapi.lib")
+
+typedef enum _PreferredAppMode
+{
+    Default,
+    AllowDark,
+    ForceDark,
+    ForceLight,
+    Max
+} PreferredAppMode;
+
+typedef PreferredAppMode(WINAPI* fnSetPreferredAppMode)(PreferredAppMode appMode);
+
+typedef struct system_processor_times {
+    ULONGLONG IdleTime;
+    ULONGLONG KernelTime;
+    ULONGLONG UserTime;
+    ULONGLONG DpcTime;
+    ULONGLONG InterruptTime;
+    ULONG     InterruptCount;
+} SYSTEM_PROCESSOR_TIMES;
+
+typedef NTSTATUS (NTAPI *ZwQuerySystemInformationFunc)(
+    ULONG SystemInformationClass, 
+    PVOID SystemInformation, 
+    ULONG SystemInformationLength, 
+    PULONG ReturnLength
+);
+
+#define SystemProcessorTimesCLASS 8
 
 #define ProcessListViewX 0
 #define ProcessListViewY 25
 
 #define TabControlX 10
 #define TabControlY 10
+
+void EnableDarkMode(HWND hwnd)
+{
+    HMODULE hUxTheme = LoadLibraryExW(L"uxtheme.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (hUxTheme)
+    {
+        auto SetPreferredAppMode = (fnSetPreferredAppMode)GetProcAddress(hUxTheme, "SetPreferredAppMode");
+        if (SetPreferredAppMode)
+        {
+            SetPreferredAppMode(AllowDark);
+        }
+        FreeLibrary(hUxTheme);
+    }
+
+    BOOL isDarkMode = TRUE;
+    DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &isDarkMode, sizeof(isDarkMode));
+}
 
 HMENU CreateAppMenu() {
     HMENU hMenu = CreateMenu();
@@ -94,7 +151,7 @@ void AddTabItems(HWND hTab) {
     HIMAGELIST hImageList = CreateTabImageList();
     TabCtrl_SetImageList(hTab, hImageList);
 
-    TCITEM tie = { 0 };
+    TCITEM tie = { };
     tie.mask = TCIF_TEXT | TCIF_IMAGE;
 
     tie.pszText = (LPWSTR)L"Процессы";
@@ -124,11 +181,7 @@ void HandleContextMenu(HWND hwnd, WPARAM wParam, LPARAM lParam) {
 void CloseProcessById(DWORD processId) {
     HANDLE hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, processId);
     if (hProcess) {
-        if (TerminateProcess(hProcess, 0)) {
-            MessageBox(NULL, L"Процесс успешно завершён.", L"Успех", MB_OK | MB_ICONINFORMATION);
-        } else {
-            MessageBox(NULL, L"Не удалось завершить процесс.", L"Ошибка", MB_OK | MB_ICONERROR);
-        }
+        TerminateProcess(hProcess, 0) ? MessageBox(NULL, L"Процесс успешно завершён.", L"Успех", MB_OK | MB_ICONINFORMATION) : MessageBox(NULL, L"Не удалось завершить процесс.", L"Ошибка", MB_OK | MB_ICONERROR);
         CloseHandle(hProcess);
     } else {
         MessageBox(NULL, L"Не удалось открыть процесс для завершения.", L"Ошибка", MB_OK | MB_ICONERROR);
@@ -169,13 +222,13 @@ std::wstring GetPriority(DWORD processId)
 
         std::wstring priorityString;
         switch (priorityClass) {
-        case IDLE_PRIORITY_CLASS: priorityString = L"Низкий"; break;
-        case BELOW_NORMAL_PRIORITY_CLASS: priorityString = L"Ниже нормального"; break;
-        case NORMAL_PRIORITY_CLASS: priorityString = L"Нормальный"; break;
-        case ABOVE_NORMAL_PRIORITY_CLASS: priorityString = L"Выше нормального"; break;
-        case HIGH_PRIORITY_CLASS: priorityString = L"Высокий"; break;
-        case REALTIME_PRIORITY_CLASS: priorityString = L"Реального времени"; break;
-        default: priorityString = L"Неизвестно"; break;
+            case IDLE_PRIORITY_CLASS: priorityString = L"Низкий"; break;
+            case BELOW_NORMAL_PRIORITY_CLASS: priorityString = L"Ниже нормального"; break;
+            case NORMAL_PRIORITY_CLASS: priorityString = L"Нормальный"; break;
+            case ABOVE_NORMAL_PRIORITY_CLASS: priorityString = L"Выше нормального"; break;
+            case HIGH_PRIORITY_CLASS: priorityString = L"Высокий"; break;
+            case REALTIME_PRIORITY_CLASS: priorityString = L"Реального времени"; break;
+            default: priorityString = L"Неизвестно"; break;
         }
         
         CloseHandle(hProcess);
@@ -234,8 +287,8 @@ std::wstring GetProcessTimeCreation(DWORD processId)
             FileTimeToSystemTime(&creationTime, &st);
             st.wHour += 3; //For UTC
             wchar_t timeString[100];
-            swprintf_s(timeString, 100, L"%02d/%02d/%04d %02d:%02d:%02d",
-            st.wDay, st.wMonth, st.wYear, st.wHour, st.wMinute, st.wSecond);
+            (void)swprintf_s(timeString, 100, L"%02d/%02d/%04d %02d:%02d:%02d",
+                       st.wDay, st.wMonth, st.wYear, st.wHour, st.wMinute, st.wSecond);
             std::wstring result(timeString);
             return result;
         }
@@ -255,7 +308,7 @@ std::wstring GetMemoryUsage(HANDLE hProcess) {
     PROCESS_MEMORY_COUNTERS_EX pmc;
     if (GetProcessMemoryInfo(hProcess, (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc))) {
 
-        double memoryUsageMB = pmc.WorkingSetSize / (1024.0 * 1024.0);
+        double memoryUsageMB = static_cast<double>(pmc.WorkingSetSize) / (1024.0 * 1024.0);
         return FormatFloat(3, memoryUsageMB);
     }
     return L"N/A";
@@ -293,7 +346,7 @@ HWND CreateProcessListView(HWND hParent) {
         
         lvColumn.fmt = LVCFMT_CENTER;
         lvColumn.cchTextMax = MAX_PATH;
-        lvColumn.pszText = (LPWSTR)columnHeaders[i].c_str();
+        lvColumn.pszText = const_cast<LPWSTR>(columnHeaders[i].c_str());
         lvColumn.cx = columnWidths[i];
         lvColumn.iImage = 1;
         lvColumn.iSubItem = i;
@@ -305,7 +358,7 @@ HWND CreateProcessListView(HWND hParent) {
 }
 
 int FindProcessInListViewByPID(HWND hListView, DWORD processID) {
-    LVFINDINFO findInfo = { 0 };
+    LVFINDINFO findInfo = { };
     findInfo.flags = LVFI_PARAM;
     findInfo.lParam = processID;
     return ListView_FindItem(hListView, -1, &findInfo);
@@ -314,7 +367,7 @@ int FindProcessInListViewByPID(HWND hListView, DWORD processID) {
 void RemoveStaleProcesses(HWND hListView, const std::set<DWORD>& existingProcesses) {
     int itemCount = ListView_GetItemCount(hListView);
     for (int i = itemCount - 1; i >= 0; --i) {
-        LVITEM lvi = { 0 };
+        LVITEM lvi = { };
         lvi.iItem = i;
         lvi.mask = LVIF_PARAM;
 
@@ -322,7 +375,7 @@ void RemoveStaleProcesses(HWND hListView, const std::set<DWORD>& existingProcess
             DWORD processID = static_cast<DWORD>(lvi.lParam);
 
             if (existingProcesses.find(processID) == existingProcesses.end()) {
-                ListView_DeleteItem(hListView, i);  // Удаляем неактуальный процесс
+                ListView_DeleteItem(hListView, i);
             }
         }
     }
@@ -330,7 +383,8 @@ void RemoveStaleProcesses(HWND hListView, const std::set<DWORD>& existingProcess
 
 void PopulateProcessListView(HWND hListView, std::map<std::wstring, int>& iconMap)
 {
-    SCROLLINFO si = { sizeof(SCROLLINFO) };
+    SCROLLINFO si = { };
+    si.cbSize = sizeof(SCROLLINFO);
     si.fMask = SIF_POS;
     GetScrollInfo(hListView, SB_VERT, &si);
     int scrollPos = si.nPos;
@@ -342,7 +396,8 @@ void PopulateProcessListView(HWND hListView, std::map<std::wstring, int>& iconMa
         return;
     }
 
-    PROCESSENTRY32 pe32 = { sizeof(PROCESSENTRY32) };
+    PROCESSENTRY32 pe32 = { };
+    pe32.dwSize = sizeof(PROCESSENTRY32);
     std::set<DWORD> existingProcesses;
     
     if (Process32First(hProcessSnap, &pe32)) {
@@ -352,9 +407,9 @@ void PopulateProcessListView(HWND hListView, std::map<std::wstring, int>& iconMa
 
             int itemIndex = FindProcessInListViewByPID(hListView, processID);
             
-            LVITEM lvi = { 0 };
+            LVITEM lvi = { };
             lvi.mask = LVIF_TEXT | LVIF_IMAGE | LVIF_PARAM;
-            lvi.pszText = (LPWSTR)exeFile.c_str();
+            lvi.pszText = const_cast<LPWSTR>(exeFile.c_str());
             //lvi.iItem = (itemIndex == -1) ? 0 : ListView_GetItemCount(hListView);
             lvi.iItem = (itemIndex == -1) ? ListView_GetItemCount(hListView) : itemIndex;
             lvi.iImage = 0;
@@ -369,27 +424,33 @@ void PopulateProcessListView(HWND hListView, std::map<std::wstring, int>& iconMa
                 ListView_SetItem(hListView, &lvi);
             }
             
-            ListView_SetItemText(hListView, lvi.iItem, 1, (LPWSTR)std::to_wstring(pe32.th32ProcessID).c_str());
-            std::wstring parent = pe32.th32ParentProcessID == 0 ? L"Главный процесс" : std::to_wstring(pe32.th32ParentProcessID);
-            ListView_SetItemText(hListView, lvi.iItem, 2, (LPWSTR)parent.c_str());
-            ListView_SetItemText(hListView, lvi.iItem, 3, (LPWSTR)GetPriority(pe32.th32ProcessID).c_str());
+            
+            std::wstring processId = std::to_wstring(pe32.th32ProcessID);
+            ListView_SetItemText(hListView, lvi.iItem, 1, const_cast<LPWSTR>(processId.c_str()));
 
+            std::wstring parent = pe32.th32ParentProcessID == 0 ? L"Главный процесс" : std::to_wstring(pe32.th32ParentProcessID);
+            ListView_SetItemText(hListView, lvi.iItem, 2, const_cast<LPWSTR>(parent.c_str()));
+
+            std::wstring priority = GetPriority(pe32.th32ProcessID);
+            ListView_SetItemText(hListView, lvi.iItem, 3, const_cast<LPWSTR>(priority.c_str()));
+            
             HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pe32.th32ProcessID);
             if (hProcess)
             {
                 std::wstring memUsage = GetMemoryUsage(hProcess);
-                ListView_SetItemText(hListView, lvi.iItem, 5, (LPWSTR)memUsage.c_str());
+                ListView_SetItemText(hListView, lvi.iItem, 5, const_cast<LPWSTR>(memUsage.c_str()))
                 CloseHandle(hProcess);
             }
 
-            ListView_SetItemText(hListView, lvi.iItem, 6, (LPWSTR)GetProcessTimeCreation(pe32.th32ProcessID).c_str());
+            std::wstring timeCreation = GetProcessTimeCreation(pe32.th32ProcessID);
+            ListView_SetItemText(hListView, lvi.iItem, 6, const_cast<LPWSTR>(timeCreation.c_str()));
 
             TCHAR fullPath[MAX_PATH];
             DWORD processNameLength = sizeof(fullPath) / sizeof(TCHAR);
             if (QueryFullProcessImageName(OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pe32.th32ProcessID), 0, fullPath, &processNameLength)) {
-                ListView_SetItemText(hListView, lvi.iItem, 7, (LPWSTR)fullPath);
+                ListView_SetItemText(hListView, lvi.iItem, 7, (LPWSTR)fullPath)
             }
-            ListView_SetItemText(hListView, lvi.iItem, 8, Is64BitProcess(pe32.th32ProcessID) ? (LPWSTR)L"64-бит" : (LPWSTR)L"32-бит");
+            ListView_SetItemText(hListView, lvi.iItem, 8, Is64BitProcess(pe32.th32ProcessID) ? (LPWSTR)L"64-бит" : (LPWSTR)L"32-бит")
 
             existingProcesses.insert(processID);
         } while (Process32Next(hProcessSnap, &pe32));
@@ -412,50 +473,32 @@ int GetCurrentRAMUsage() {
         DWORDLONG totalRAM = memInfo.ullTotalPhys;
         DWORDLONG freeRAM = memInfo.ullAvailPhys;
 
-        int ramUsage = static_cast<int>((1.0 - (double)freeRAM / totalRAM) * 100);
+        int ramUsage = static_cast<int>((1.0 - (double)freeRAM / static_cast<double>(totalRAM)) * 100);
         return ramUsage;
     }
 
     return 0;
 }
 
-typedef struct _SYSTEM_PROCESSOR_TIMES {
-    ULONGLONG IdleTime;
-    ULONGLONG KernelTime;
-    ULONGLONG UserTime;
-    ULONGLONG DpcTime;
-    ULONGLONG InterruptTime;
-    ULONG     InterruptCount;
-} SYSTEM_PROCESSOR_TIMES;
-
-typedef NTSTATUS (NTAPI *ZwQuerySystemInformationFunc)(
-    ULONG SystemInformationClass, 
-    PVOID SystemInformation, 
-    ULONG SystemInformationLength, 
-    PULONG ReturnLength
-);
-
-#define SystemProcessorTimesCLASS 8
-
 int GetCurrentCPUUsage(SYSTEM_INFO sysInfo, SYSTEM_PROCESSOR_TIMES* CurrentSysProcTimes,
     SYSTEM_PROCESSOR_TIMES* PreviousSysProcTimes,
     ZwQuerySystemInformationFunc ZwQuerySystemInformation)
 {
-    static DWORD oldTime = GetTickCount();
-    DWORD nowTime = GetTickCount();
-    DWORD perTime = nowTime - oldTime;
+    static ULONGLONG oldTime = GetTickCount64();
+    ULONGLONG nowTime = GetTickCount64();
+    ULONGLONG perTime = nowTime - oldTime;
     oldTime = nowTime;
 
     ZwQuerySystemInformation(SystemProcessorTimesCLASS, &CurrentSysProcTimes[0], sizeof(SYSTEM_PROCESSOR_TIMES) * sysInfo.dwNumberOfProcessors, nullptr);
 
     ULONGLONG totalIdleTime = 0;
-    for (int j = 0; j < sysInfo.dwNumberOfProcessors; j++) {
+    for (int j = 0; j < static_cast<int>(sysInfo.dwNumberOfProcessors); j++) {
         totalIdleTime += CurrentSysProcTimes[j].IdleTime - PreviousSysProcTimes[j].IdleTime;
     }
 
     ULONGLONG averageIdleTime = totalIdleTime / sysInfo.dwNumberOfProcessors;
 
-    double idleTimeMs = averageIdleTime / 10000.0;
+    double idleTimeMs = static_cast<double>(averageIdleTime) / 10000.0;
 
     double cpuUsage = 100.0 * (1.0 - (idleTimeMs / perTime));
 
@@ -464,15 +507,15 @@ int GetCurrentCPUUsage(SYSTEM_INFO sysInfo, SYSTEM_PROCESSOR_TIMES* CurrentSysPr
     }
 
     memcpy(&PreviousSysProcTimes[0], &CurrentSysProcTimes[0], sizeof(SYSTEM_PROCESSOR_TIMES) * sysInfo.dwNumberOfProcessors);
-    return cpuUsage;
+    return static_cast<int>(cpuUsage);
 }
 
 std::wstring GetSystemUptime() {
     ULONGLONG systemUptime = GetTickCount64();
     ULONGLONG seconds = (systemUptime / 1000) % 60;
-    ULONGLONG minutes = (systemUptime / (1000 * 60)) % 60;
-    ULONGLONG hours = (systemUptime / (1000 * 60 * 60)) % 24;
-    ULONGLONG days = (systemUptime / (1000 * 60 * 60 * 24));
+    ULONGLONG minutes = (systemUptime / (static_cast<ULONGLONG>(60) * 1000)) % 60;
+    ULONGLONG hours = (systemUptime / (static_cast<ULONGLONG>(60) * 1000 * 60)) % 24;
+    ULONGLONG days = (systemUptime / (static_cast<ULONGLONG>(60) * 1000 * 60 * 24));
 
     return L"Время работы: " + std::to_wstring(days) + L" дн. " +
            std::to_wstring(hours) + L" ч. " +
@@ -487,8 +530,8 @@ std::wstring GetMemoryInfo()
 
     if (GlobalMemoryStatusEx(&memoryStatus))
     {
-        ULONGLONG totalMemoryMB = memoryStatus.ullTotalPhys / (1024 * 1024);
-        ULONGLONG freeMemoryMB = memoryStatus.ullAvailPhys / (1024 * 1024);
+        ULONGLONG totalMemoryMB = memoryStatus.ullTotalPhys / (static_cast<ULONGLONG>(1024 * 1024));
+        ULONGLONG freeMemoryMB = memoryStatus.ullAvailPhys / (static_cast<ULONGLONG>(1024 * 1024));
 
         std::wstring result = L"Общий объем памяти: " + std::to_wstring(totalMemoryMB) + L" МБ\r\n" +
                               L"Свободно: " + std::to_wstring(freeMemoryMB) + L" МБ";
@@ -535,7 +578,7 @@ void DrawGraph(HWND hPerfomance, std::vector<int>& history, const int maxHistory
         int prevX = 0;
         int prevY = height - 20 - (history[0] * (height - 20) / 100);
 
-        for (size_t i = 1; i < history.size(); ++i) {
+        for (int i = 1; i < static_cast<int>(history.size()); ++i) {
             int x = i * spacing;
             int y = height - 20 - (history[i] * (height - 20) / 100);
 
@@ -561,7 +604,7 @@ void DrawGraph(HWND hPerfomance, std::vector<int>& history, const int maxHistory
 void PushValue(std::vector<int>& history, const int maxHistory, int newValue)
 {
     history.push_back(newValue);
-    if (history.size() > maxHistory) {
+    if (static_cast<int>(history.size()) > maxHistory) {
         history.erase(history.begin()); 
     }
 }
@@ -573,35 +616,40 @@ LRESULT CALLBACK ProcessListViewProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM
         case WM_COMMAND:
             {
                 int wmId = LOWORD(wParam);
-                int wmEvent = HIWORD(wParam);
+                //int wmEvent = HIWORD(wParam);
 
                 switch (wmId) 
                 {
                     case IDM_CLOSE_PROCESS:
                     {
-                       wchar_t buffer[32];
-                       ListView_GetItemText(hwnd, selectedItemIndex, 1, buffer, 32);
-                       DWORD processId = _wtoi(buffer);
-                       CloseProcessById(processId);
+                        wchar_t buffer[MAX_PATH] = { 0 }; 
+                        ListView_GetItemText(hwnd, selectedItemIndex, 1, buffer, 31); 
+                        buffer[MAX_PATH - 1] = L'\0'; 
+
+                        DWORD processId = _wtoi(buffer);
+                        CloseProcessById(processId);
                     }
                     break;
                     
                     case IDM_OPEN_LOCATION:
                     {
-                       wchar_t buffer[32];
-                       ListView_GetItemText(hwnd, selectedItemIndex, 1, buffer, 32);
-                       DWORD processId = _wtoi(buffer);
-                       OpenProcessLocation(processId);
+                        wchar_t buffer[MAX_PATH] = { 0 }; 
+                        ListView_GetItemText(hwnd, selectedItemIndex, 1, buffer, 31);
+                        buffer[MAX_PATH - 1] = L'\0';
+
+                        DWORD processId = _wtoi(buffer);
+                        OpenProcessLocation(processId);
                     }
                     break;
+                default: ;
                 }
             }
             break;
         
             case WM_CONTEXTMENU: {
-                if ((HWND)wParam == hwnd)
+                if (wParam == (WPARAM)hwnd)
                 {
-                    LVHITTESTINFO hitTestInfo = { 0 };
+                    LVHITTESTINFO hitTestInfo = { };
                     POINT pt;
                     GetCursorPos(&pt);
                     ScreenToClient(hwnd, &pt);
@@ -642,11 +690,11 @@ LRESULT CALLBACK ProcessListViewProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM
                                 COLORREF rgb;
                                 if (lpNMCustomDraw->uItemState & CDIS_SELECTED)
                                 {
-                                    rgb = RGB(26, 188, 156);  // Цвет фона для выделенного элемента
+                                    rgb = RGB(26, 188, 156);  
                                 }
                                 else
                                 {
-                                    rgb = RGB(47, 45, 60);   // Цвет фона для обычных элементов
+                                    rgb = RGB(47, 45, 60);
                                 }
                                 SetBkColor(lpNMCustomDraw->hdc, rgb);
                                 SetTextColor(lpNMCustomDraw->hdc, RGB(255, 255, 255));
@@ -664,7 +712,7 @@ LRESULT CALLBACK ProcessListViewProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM
                                 DeleteObject(hBrush);
                                 
                                 wchar_t text[MAX_PATH];
-                                HDITEM hdi = { 0 };
+                                HDITEM hdi = { };
                                 hdi.mask = HDI_TEXT;
                                 hdi.pszText = text;
                                 hdi.cchTextMax = std::size(text);
@@ -675,6 +723,7 @@ LRESULT CALLBACK ProcessListViewProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM
 
                                 return CDRF_SKIPDEFAULT;
                             }
+                        default: ;
                         }
                     }
 
@@ -699,16 +748,16 @@ LRESULT CALLBACK TabControlProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
                 LPNMLVCUSTOMDRAW pLVCD = (LPNMLVCUSTOMDRAW)lParam;
                 switch (pLVCD->nmcd.dwDrawStage)
                 {
-                case CDDS_PREPAINT:
-                    return CDRF_NOTIFYITEMDRAW;
- 
-                case CDDS_ITEMPREPAINT:
-                    pLVCD->clrText = RGB(255, 255, 255);
-                    pLVCD->clrTextBk = RGB(57, 66, 100);
-                    return CDRF_DODEFAULT;
- 
-                default:
-                    break;
+                    case CDDS_PREPAINT:
+                        return CDRF_NOTIFYITEMDRAW;
+     
+                    case CDDS_ITEMPREPAINT:
+                        pLVCD->clrText = RGB(255, 255, 255);
+                        pLVCD->clrTextBk = RGB(57, 66, 100);
+                        return CDRF_DODEFAULT;
+     
+                    default:
+                        break;
                 }
             }
             break;
@@ -717,7 +766,7 @@ LRESULT CALLBACK TabControlProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
     case WM_CTLCOLORSTATIC:
         {
             HDC hdcStatic = (HDC)wParam;
-            HWND hStatic = (HWND)lParam;
+            //HWND hStatic = (HWND)lParam;
  
             SetBkColor(hdcStatic, RGB(43, 41, 55));
             SetTextColor(hdcStatic, RGB(255, 255, 255));
@@ -731,6 +780,220 @@ LRESULT CALLBACK TabControlProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
         return CallWindowProc((WNDPROC)GetWindowLongPtr(hwnd, GWLP_USERDATA), hwnd, uMsg, wParam, lParam);
     }
     return CallWindowProc((WNDPROC)GetWindowLongPtr(hwnd, GWLP_USERDATA), hwnd, uMsg, wParam, lParam);
+}
+
+LRESULT CALLBACK EditProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    if (uMsg == WM_KEYDOWN) {
+        if ((GetKeyState(VK_CONTROL) & 0x8000) && wParam == 'A') {
+            SendMessage(hwnd, EM_SETSEL, 0, -1);
+            return 0;
+        }
+    }
+    if (uMsg == WM_KEYDOWN && wParam == VK_RETURN) {
+        SendMessage(GetParent(hwnd), WM_COMMAND, IDC_BTN_OK, 0);
+        return 0;
+    }
+    return CallWindowProc((WNDPROC)GetWindowLongPtr(hwnd, GWLP_USERDATA), hwnd, uMsg, wParam, lParam);
+}
+
+int CALLBACK BrowseCallbackProc(HWND hwnd, UINT uMsg, LPARAM lParam, LPARAM lpData) {
+    if (uMsg == BFFM_INITIALIZED) {
+        RECT rcScreen, rcDialog;
+        SystemParametersInfo(SPI_GETWORKAREA, 0, &rcScreen, 0);
+        GetWindowRect(hwnd, &rcDialog);
+
+        int posX = (rcScreen.right - rcDialog.right + rcDialog.left) / 2 - (rcDialog.right - rcDialog.left) / 2;
+        SetWindowPos(hwnd, NULL, posX, 0, 0, 0, SWP_NOZORDER | SWP_NOSIZE);
+    }
+    return 0;
+}
+
+BOOL SelectFolder(HWND hwnd, LPWSTR folderPath, int bufferSize) {
+    HWND dialogHwnd = NULL;
+
+    BROWSEINFO bi = { 0 };
+    bi.lpszTitle = L"Выберите папку или файл";
+    bi.ulFlags = BIF_NEWDIALOGSTYLE | BIF_BROWSEINCLUDEFILES;
+    bi.hwndOwner = hwnd;
+    bi.lParam = (LPARAM)&dialogHwnd;
+    bi.lpfn = BrowseCallbackProc;
+
+    LPITEMIDLIST pidl = SHBrowseForFolder(&bi);
+    if (pidl != NULL) {
+        if (SHGetPathFromIDList(pidl, folderPath)) {
+            CoTaskMemFree(pidl);
+            return TRUE;
+        }
+        CoTaskMemFree(pidl);
+    }
+    return FALSE;
+}
+
+LRESULT CALLBACK RunTaskProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+    static HWND hEdit;
+    switch (uMsg) {
+        
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC hdc = BeginPaint(hwnd, &ps);
+            HBRUSH hBrushBackground = CreateSolidBrush(RGB(43, 41, 55));
+            FillRect(hdc, &ps.rcPaint, hBrushBackground);
+            DeleteObject(hBrushBackground);    
+            EndPaint(hwnd, &ps);
+        }
+        break;
+    
+    case WM_CREATE:
+        {
+            EnableDarkMode(hwnd);
+            const int padding = 10;
+            RECT clientRect;
+            GetClientRect(hwnd, &clientRect);
+            int windowWidth = clientRect.right - clientRect.left;
+            int windowHeight = clientRect.bottom - clientRect.top;
+
+            int staticHeight = 20;
+            int editHeight = 25;
+            int buttonHeight = 30;
+            int checkboxHeight = 20;
+
+            int staticY = padding;
+            int editY = staticY + staticHeight + padding;
+            int checkboxY = editY + editHeight + padding;
+            int buttonsY = checkboxY + checkboxHeight + padding;
+
+            int buttonWidth = (windowWidth - 4 * padding) / 3;
+
+            CreateWindowEx(0, WC_STATIC,
+                L"Введите имя программы, папки, документа или ресурса интернета, которые требуется открыть:",
+                WS_CHILD | WS_VISIBLE, 
+                padding, staticY, windowWidth - 2 * padding, staticHeight,
+                hwnd, NULL, NULL, NULL);
+
+            hEdit = CreateWindowEx(0, WC_EDIT, NULL,
+                WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | WS_TABSTOP,
+                padding, editY, windowWidth - 2 * padding, editHeight,
+                hwnd, (HMENU)IDC_EDIT_TASK, NULL, NULL);
+
+            WNDPROC oldEditProc = (WNDPROC)GetWindowLongPtr(hEdit, GWLP_WNDPROC);
+            SetWindowLongPtr(hEdit, GWLP_WNDPROC, (LONG_PTR)EditProc);
+            SetWindowLongPtr(hEdit, GWLP_USERDATA, (LONG_PTR)oldEditProc);
+
+            SHAutoComplete(GetDlgItem(hwnd, IDC_EDIT_TASK), SHACF_AUTOAPPEND_FORCE_OFF | SHACF_AUTOSUGGEST_FORCE_OFF);
+
+            CreateWindowEx(0, WC_BUTTON, L"Создать задачу с правами администратора",
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP,
+                padding, checkboxY, windowWidth - 2 * padding, checkboxHeight,
+                hwnd, (HMENU)IDC_CHECK_ADMIN, NULL, NULL);
+
+            CreateWindowEx(0, WC_BUTTON, L"Обзор",
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | BS_PUSHBUTTON | WS_TABSTOP,
+                padding, buttonsY, buttonWidth, buttonHeight,
+                hwnd, (HMENU)IDC_BTN_BROWSE, NULL, NULL);
+
+            CreateWindowEx(0, WC_BUTTON, L"OK",
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | BS_PUSHBUTTON | WS_TABSTOP,
+                2 * padding + buttonWidth, buttonsY, buttonWidth, buttonHeight,
+                hwnd, (HMENU)IDC_BTN_OK, NULL, NULL);
+
+            CreateWindowEx(0, WC_BUTTON, L"Отмена", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | BS_PUSHBUTTON | WS_TABSTOP,
+                3 * padding + 2 * buttonWidth, buttonsY, buttonWidth, buttonHeight,
+                hwnd, (HMENU)IDC_BTN_CANCEL, NULL, NULL);
+        }
+        break;
+    
+    case WM_DRAWITEM: {
+        LPDRAWITEMSTRUCT pDIS = (LPDRAWITEMSTRUCT)lParam;
+        if (pDIS->CtlType == ODT_BUTTON) {
+            HDC hdc = pDIS->hDC;
+
+            BOOL isHovered = (pDIS->itemState & ODS_SELECTED) || (pDIS->itemState & ODS_FOCUS);
+
+            HBRUSH hBrush = CreateSolidBrush(isHovered ? RGB(26, 188, 156) : RGB(61, 74, 121));
+            FillRect(hdc, &pDIS->rcItem, hBrush);
+            DeleteObject(hBrush);
+
+            SetTextColor(hdc, RGB(255, 255, 255));
+            SetBkMode(hdc, TRANSPARENT);
+
+            wchar_t text[32];
+            GetWindowText(pDIS->hwndItem, text, ARRAYSIZE(text));
+            DrawText(hdc, text, -1, &pDIS->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
+    }
+    break;
+    
+    case WM_COMMAND:
+        switch (LOWORD(wParam)) {
+    case IDC_BTN_OK: {
+            wchar_t taskName[MAX_PATH];
+            GetDlgItemText(hwnd, IDC_EDIT_TASK, taskName, MAX_PATH);
+
+            if (wcslen(taskName) == 0) {
+                MessageBox(hwnd, L"Введите текст перед выполнением задачи!", L"Предупреждение", MB_OK | MB_ICONWARNING);
+                SetFocus(hEdit);
+                break;
+            }
+            
+            BOOL runAsAdmin = IsDlgButtonChecked(hwnd, IDC_CHECK_ADMIN) == BST_CHECKED;
+
+            if (wcslen(taskName) > 0) {
+                SHELLEXECUTEINFO sei = { sizeof(SHELLEXECUTEINFO) };
+                sei.fMask = SEE_MASK_FLAG_NO_UI | SEE_MASK_UNICODE;
+                sei.lpVerb = runAsAdmin ? L"runas" : L"open";
+                sei.lpFile = taskName;
+                sei.nShow = SW_SHOWNORMAL;
+
+                if (!ShellExecuteEx(&sei)) {
+                    MessageBox(hwnd, L"Не удалось запустить задачу", L"Ошибка", MB_OK | MB_ICONERROR);
+                }
+            }
+            break;
+        }
+        case IDC_BTN_BROWSE: {
+            wchar_t folderPath[MAX_PATH] = { 0 };
+            if (SelectFolder(GetParent(hwnd), folderPath, MAX_PATH)) {
+                SetDlgItemText(hwnd, IDC_EDIT_TASK, folderPath);
+            }
+            break;
+        }
+    case IDC_BTN_CANCEL:
+        DestroyWindow(hwnd);
+            break;
+    default:;
+        }
+        break;
+
+    case WM_CTLCOLORSTATIC:
+        {
+            HDC hdc = (HDC)wParam;
+            SetBkColor(hdc, RGB(43, 41, 55));
+            SetTextColor(hdc, RGB(255, 255, 255));
+            return (LRESULT)CreateSolidBrush(RGB(43, 41, 55));
+        }
+        
+    case WM_CTLCOLOREDIT: {
+            HDC hdc = (HDC)wParam;
+            SetBkColor(hdc, RGB(57, 66, 100));
+            SetTextColor(hdc, RGB(255, 255, 255));
+            return (LRESULT)CreateSolidBrush(RGB(57, 66, 100));
+    }
+
+    case WM_CLOSE:
+        DestroyWindow(hwnd);
+        break;
+
+    case WM_DESTROY: {
+            HWND hwndParent = GetParent(hwnd);
+            SetWindowLongPtr(hwndParent, GWLP_USERDATA, NULL);
+            break;
+    }
+
+    default:
+        return DefWindowProc(hwnd, uMsg, wParam, lParam);
+    }
+    return 0;
 }
 
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
@@ -889,18 +1152,31 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                 (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
 
             hPerfomanceCPU = CreateWindowEx(0, WC_STATIC, L"", WS_CHILD,
-                10, 140, SCREEN_WIDTH / 2 - 50, SCREEN_HEIGHT * 0.65, hTabControl, NULL, (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
+                10, 140, SCREEN_WIDTH / 2 - 50, static_cast<int>(SCREEN_HEIGHT * 0.65), hTabControl, NULL, (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
 
             hPerfomanceRAM = CreateWindowEx(0, WC_STATIC, L"", WS_CHILD,
-                    SCREEN_WIDTH / 2, 140, SCREEN_WIDTH / 2 - 50, SCREEN_HEIGHT * 0.65, hTabControl, NULL, (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
+                    SCREEN_WIDTH / 2, 140, SCREEN_WIDTH / 2 - 50, static_cast<int>(SCREEN_HEIGHT * 0.65), hTabControl, NULL, (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
                       
             SendMessage(hProgressBarRAM, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
                 
-            SendMessage(hProgressBarCPU, PBM_SETBARCOLOR, 0, RGB(26, 188, 156));  // Синий прогрессбар
-            SendMessage(hProgressBarRAM, PBM_SETBARCOLOR, 0, RGB(26, 188, 156));  // Зелёный прогрессбар
+            SendMessage(hProgressBarCPU, PBM_SETBARCOLOR, 0, RGB(26, 188, 156));
+            SendMessage(hProgressBarRAM, PBM_SETBARCOLOR, 0, RGB(26, 188, 156));
                 
             SetTimer(hwnd, TIMER_GRAPH, 50, NULL);
             timerId = SetTimer(hwnd, TIMER_PROCESSES, updateInterval, NULL);
+
+            WNDCLASS wc = { };
+            wc.lpfnWndProc = RunTaskProc;
+            wc.hInstance = (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE);
+            wc.lpszClassName = TaskName;
+            wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+            wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+            wc.cbWndExtra = DLGWINDOWEXTRA;
+                
+            wc.hIcon = LoadIcon((HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), MAKEINTRESOURCE(IDI_MAINICON));
+            RegisterClass(&wc);
+
+            EnableDarkMode(hwnd);    
         }
         break;
 
@@ -954,19 +1230,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
         case WM_KEYDOWN:
         {
-            int wmId = LOWORD(wParam);
-            int wmEvent = HIWORD(wParam);
-
-            /*if (wParam == VK_RETURN) {
-                
-            }*/
+            //int wmId = LOWORD(wParam);
+            //int wmEvent = HIWORD(wParam);
         }
         break;
 
         case WM_NOTIFY:
             {
                 NMHDR* nmhdr = (NMHDR*)lParam;
-
                 
                 if (nmhdr->hwndFrom == hTabControl && nmhdr->code == TCN_SELCHANGE) {
                     int tabIndex = TabCtrl_GetCurSel(hTabControl);
@@ -1013,7 +1284,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         case WM_COMMAND:
         {
             int wmId = LOWORD(wParam);
-            int wmEvent = HIWORD(wParam);
+            //int wmEvent = HIWORD(wParam);
 
             switch (wmId) 
             {
@@ -1032,6 +1303,35 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                     PopulateProcessListView(hListViewProcesses, iconMap);
                 }
                 break;
+                case ID_MENU_RUN_TASK: {
+                    HWND hwndTaskWindow = (HWND)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+
+                    if (hwndTaskWindow == NULL) {
+                        int width = static_cast<int>(SCREEN_WIDTH * 0.3);
+                        int height = static_cast<int>(SCREEN_HEIGHT * 0.25);
+
+                        RECT desktop;
+                        GetWindowRect(GetDesktopWindow(), &desktop);
+
+                        int x = (desktop.right - width) / 2;
+                        int y = (desktop.bottom - height) / 2;
+
+                        hwndTaskWindow = CreateWindowEx(
+                            WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
+                            TaskName, L"Создать задачу",
+                            WS_VISIBLE | WS_POPUP | WS_SYSMENU | WS_CAPTION | WS_TABSTOP,
+                            x, y, width, height,
+                            hwnd, NULL, (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL
+                        );
+
+                        if (hwndTaskWindow) {
+                            SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)hwndTaskWindow);
+                        }
+                    } else {
+                        SetForegroundWindow(hwndTaskWindow);
+                    }
+                }
+                break;
             
                 case ID_MENU_RARE:
                     updateInterval = 5000;
@@ -1046,7 +1346,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                     KillTimer(hwnd, TIMER_PROCESSES);
                     timerId = 0;
                     return 0;
-                }
+            default: ;
+            }
 
                 if (timerId) {
                     KillTimer(hwnd, TIMER_PROCESSES);
@@ -1099,7 +1400,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
     _In_ PWSTR pCmdLine, _In_ int nCmdShow)
 {
-    WNDCLASS wc = { 0 };
+    WNDCLASS wc = { };
     wc.lpfnWndProc = WindowProc;
     wc.hInstance = hInstance;
     wc.lpszClassName = MainName;
@@ -1127,7 +1428,8 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
     exStyle &= ~(WS_EX_DLGMODALFRAME | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE);
     SetWindowLong(hwnd, GWL_EXSTYLE, exStyle);*/
 
-    MONITORINFO mi = { sizeof(mi) };
+    MONITORINFO mi = { };
+    mi.cbSize = sizeof(MONITORINFO);
     if (GetMonitorInfo(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi)) {
         SetWindowPos(hwnd, HWND_TOP,
             mi.rcMonitor.left, mi.rcMonitor.top,
