@@ -294,24 +294,31 @@ std::wstring GetProcessTimeCreation(DWORD processId)
         }
         CloseHandle(hProcess);
     }
-    return L"";
+    return L"—";
 }
 
 std::wstring FormatFloat(int precision, double value) {
     std::wstringstream stream;
     stream.precision(precision);
-    stream << std::fixed << value << L" MB";
+    stream << std::fixed << value;
     return stream.str();
 }
 
-std::wstring GetMemoryUsage(HANDLE hProcess) {
-    PROCESS_MEMORY_COUNTERS_EX pmc;
-    if (GetProcessMemoryInfo(hProcess, (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc))) {
+std::wstring GetMemoryUsage(DWORD processID) {
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, processID);
+    std::wstring result = L"—";
+    if (hProcess)
+    {
+        PROCESS_MEMORY_COUNTERS_EX pmc;
+        if (GetProcessMemoryInfo(hProcess, (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc))) {
 
-        double memoryUsageMB = static_cast<double>(pmc.WorkingSetSize) / (1024.0 * 1024.0);
-        return FormatFloat(3, memoryUsageMB);
+            double memoryUsageMB = static_cast<double>(pmc.WorkingSetSize) / (1024.0 * 1024.0);
+            result = FormatFloat(3, memoryUsageMB) + L" MB";
+        }
+        CloseHandle(hProcess);
     }
-    return L"N/A";
+    
+    return result;
 }
 
 HWND CreateProcessListView(HWND hParent) {
@@ -337,10 +344,13 @@ HWND CreateProcessListView(HWND hParent) {
         L"Имя процесса", L"ID процесса", L"ID родительского процесса", L"Приоритет",
         L"Загрузка ЦП", L"Загрузка Памяти", L"Время создания", L"Путь к файлу", L"Битность"
     };
-    int columnWidths[] = { 200, 145, 145, 150, 150, 185, 180, 240, 80 };
 
+    int width = SCREEN_WIDTH - 40;
+    
+    const float columnWidths[] = { width * 0.15f, width * 0.12f, width * 0.12f, width * 0.11f, width * 0.1f, width * 0.10f, width * 0.092f, width * 0.15f, width * 0.05f };
+    
     for (int i = 0; i < 9; i++) {
-        lvColumn.mask = (i == 0) 
+        lvColumn.mask = i == 0 
                         ? LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM | LVCF_FMT | LVCF_IMAGE
                         : LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM | LVCF_FMT;
         
@@ -381,6 +391,37 @@ void RemoveStaleProcesses(HWND hListView, const std::set<DWORD>& existingProcess
     }
 }
 
+std::wstring GetCpuUsage(DWORD processID) {
+    FILETIME ftCreation, ftExit, ftKernel, ftUser;
+    ULARGE_INTEGER uKernel, uUser, uNow;
+    
+    if (HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, processID)) {
+        if (GetProcessTimes(hProcess, &ftCreation, &ftExit, &ftKernel, &ftUser)) {
+            uKernel.LowPart = ftKernel.dwLowDateTime;
+            uKernel.HighPart = ftKernel.dwHighDateTime;
+
+            uUser.LowPart = ftUser.dwLowDateTime;
+            uUser.HighPart = ftUser.dwHighDateTime;
+
+            FILETIME ftNow;
+            GetSystemTimeAsFileTime(&ftNow);
+            uNow.LowPart = ftNow.dwLowDateTime;
+            uNow.HighPart = ftNow.dwHighDateTime;
+
+            double processTime = (uKernel.QuadPart + uUser.QuadPart) / 1000.0;
+            double totalTime = uNow.QuadPart / 10000000.0;
+
+            double cpuUsage = processTime / totalTime * 100.0;
+
+            CloseHandle(hProcess);
+            
+            return FormatFloat(6, cpuUsage) + L"%";
+        }
+        CloseHandle(hProcess);
+    }
+    return L"—";
+}
+
 void PopulateProcessListView(HWND hListView, std::map<std::wstring, int>& iconMap)
 {
     SCROLLINFO si = { };
@@ -391,7 +432,7 @@ void PopulateProcessListView(HWND hListView, std::map<std::wstring, int>& iconMa
 
     SendMessage(hListView, WM_SETREDRAW, FALSE, 0);
 
-    HANDLE hProcessSnap = CreateToolhelp32Snapshot(TH32CS_SNAPALL, 0);
+    HANDLE hProcessSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (hProcessSnap == INVALID_HANDLE_VALUE) {
         return;
     }
@@ -424,7 +465,6 @@ void PopulateProcessListView(HWND hListView, std::map<std::wstring, int>& iconMa
                 ListView_SetItem(hListView, &lvi);
             }
             
-            
             std::wstring processId = std::to_wstring(pe32.th32ProcessID);
             ListView_SetItemText(hListView, lvi.iItem, 1, const_cast<LPWSTR>(processId.c_str()));
 
@@ -433,15 +473,13 @@ void PopulateProcessListView(HWND hListView, std::map<std::wstring, int>& iconMa
 
             std::wstring priority = GetPriority(pe32.th32ProcessID);
             ListView_SetItemText(hListView, lvi.iItem, 3, const_cast<LPWSTR>(priority.c_str()));
-            
-            HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pe32.th32ProcessID);
-            if (hProcess)
-            {
-                std::wstring memUsage = GetMemoryUsage(hProcess);
-                ListView_SetItemText(hListView, lvi.iItem, 5, const_cast<LPWSTR>(memUsage.c_str()))
-                CloseHandle(hProcess);
-            }
 
+            std::wstring cpuUsage = GetCpuUsage(processID);
+            ListView_SetItemText(hListView, lvi.iItem, 4, const_cast<LPWSTR>(cpuUsage.c_str()));
+
+            std::wstring memUsage = GetMemoryUsage(processID);
+            ListView_SetItemText(hListView, lvi.iItem, 5, const_cast<LPWSTR>(memUsage.c_str()))
+            
             std::wstring timeCreation = GetProcessTimeCreation(pe32.th32ProcessID);
             ListView_SetItemText(hListView, lvi.iItem, 6, const_cast<LPWSTR>(timeCreation.c_str()));
 
@@ -449,7 +487,11 @@ void PopulateProcessListView(HWND hListView, std::map<std::wstring, int>& iconMa
             DWORD processNameLength = sizeof(fullPath) / sizeof(TCHAR);
             if (QueryFullProcessImageName(OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pe32.th32ProcessID), 0, fullPath, &processNameLength)) {
                 ListView_SetItemText(hListView, lvi.iItem, 7, (LPWSTR)fullPath)
+            } else
+            {
+                ListView_SetItemText(hListView, lvi.iItem, 7, (LPWSTR)L"—");
             }
+            
             ListView_SetItemText(hListView, lvi.iItem, 8, Is64BitProcess(pe32.th32ProcessID) ? (LPWSTR)L"64-бит" : (LPWSTR)L"32-бит")
 
             existingProcesses.insert(processID);
@@ -533,8 +575,45 @@ std::wstring GetMemoryInfo()
         ULONGLONG totalMemoryMB = memoryStatus.ullTotalPhys / (static_cast<ULONGLONG>(1024 * 1024));
         ULONGLONG freeMemoryMB = memoryStatus.ullAvailPhys / (static_cast<ULONGLONG>(1024 * 1024));
 
-        std::wstring result = L"Общий объем памяти: " + std::to_wstring(totalMemoryMB) + L" МБ\r\n" +
-                              L"Свободно: " + std::to_wstring(freeMemoryMB) + L" МБ";
+        SYSTEM_INFO sysInfo;
+        GetSystemInfo(&sysInfo);
+
+        std::wstring architecture;
+        WORD arch = sysInfo.wProcessorArchitecture;
+
+        switch (arch) {
+        case PROCESSOR_ARCHITECTURE_AMD64: architecture = L"x64 (AMD or Intel)"; break;
+        case PROCESSOR_ARCHITECTURE_ARM:   architecture = L"ARM"; break;
+        case PROCESSOR_ARCHITECTURE_ARM64: architecture = L"ARM64"; break;
+        case PROCESSOR_ARCHITECTURE_INTEL: architecture = L"x86 (32-bit)"; break;
+        default: architecture = L"Неизвестная архитектура"; break;
+        }
+
+        DWORD logicalCores = sysInfo.dwNumberOfProcessors;
+
+        ULONG physicalCores = 0;
+        GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &physicalCores);
+        physicalCores /= sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX);
+
+        HKEY hKey;
+        DWORD data, dataSize = sizeof(data);
+        if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, 
+                         L"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", 
+                         0, KEY_READ, &hKey) == ERROR_SUCCESS)
+        {
+            RegQueryValueEx(hKey, L"~MHz", nullptr, nullptr, (LPBYTE)&data, &dataSize);
+            RegCloseKey(hKey);
+        }
+        else {
+            data = 0;
+        }
+        
+        std::wstring result = L"Общий объем памяти: " + std::to_wstring(totalMemoryMB) + L" МБ; " +
+                              L"Свободно: " + std::to_wstring(freeMemoryMB) + L" МБ; \r\n" +
+                              L"Количество логических ядер: " + std::to_wstring(logicalCores) + L"; " +
+                              L"Количество физических ядер: " + std::to_wstring(physicalCores) + L"; \r\n" +
+                              L"Архитектура процессора: " + architecture + L"; " +
+                              L"Частота процессора: " + std::to_wstring(data) + L" МГц\r\n";
         return result;
     }
     return L"Ошибка получения информации о памяти";
@@ -853,10 +932,10 @@ LRESULT CALLBACK RunTaskProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             int windowWidth = clientRect.right - clientRect.left;
             int windowHeight = clientRect.bottom - clientRect.top;
 
-            int staticHeight = 20;
-            int editHeight = 25;
-            int buttonHeight = 30;
-            int checkboxHeight = 20;
+            int staticHeight = SCREEN_HEIGHT * 0.035;
+            int editHeight = SCREEN_HEIGHT * 0.04;
+            int buttonHeight = SCREEN_HEIGHT * 0.05;
+            int checkboxHeight = SCREEN_HEIGHT * 0.03;
 
             int staticY = padding;
             int editY = staticY + staticHeight + padding;
@@ -1089,7 +1168,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                 PostQuitMessage(0);
                 return -1;
             }
-
+                
             if (ZwQuerySystemInformation(SystemProcessorTimesCLASS, &PreviousSysProcTimes[0], sizeof(SYSTEM_PROCESSOR_TIMES) * sysInfo.dwNumberOfProcessors, nullptr) != 0) {
                 MessageBox(NULL, L"Не удалось получить данные о процессорах", L"Ошибка", MB_OK | MB_ICONERROR);
                 FreeLibrary(lib);
@@ -1143,12 +1222,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
                 hLabelUptime = CreateWindowEx(0, WC_STATIC, L"",
                     WS_CHILD,
-                    SCREEN_WIDTH / 2 - 150, 50, 300, 20, hTabControl, NULL, 
+                    SCREEN_WIDTH / 2 - 150, 10, 300, 20, hTabControl, NULL, 
                     (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);    
 
                 hLabelMemoryInfo = CreateWindowEx(0, WC_STATIC, L"",
                 WS_CHILD,
-                SCREEN_WIDTH / 2 - 150, 75, 300, 40, hTabControl, NULL, 
+                SCREEN_WIDTH / 2 - 200, 40, 600, 60, hTabControl, NULL, 
                 (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
 
             hPerfomanceCPU = CreateWindowEx(0, WC_STATIC, L"", WS_CHILD,
@@ -1171,7 +1250,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             wc.lpszClassName = TaskName;
             wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
             wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
-            wc.cbWndExtra = DLGWINDOWEXTRA;
                 
             wc.hIcon = LoadIcon((HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), MAKEINTRESOURCE(IDI_MAINICON));
             RegisterClass(&wc);
@@ -1308,7 +1386,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
                     if (hwndTaskWindow == NULL) {
                         int width = static_cast<int>(SCREEN_WIDTH * 0.3);
-                        int height = static_cast<int>(SCREEN_HEIGHT * 0.25);
+                        int height = static_cast<int>(SCREEN_HEIGHT * 0.27);
 
                         RECT desktop;
                         GetWindowRect(GetDesktopWindow(), &desktop);
@@ -1319,7 +1397,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                         hwndTaskWindow = CreateWindowEx(
                             WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
                             TaskName, L"Создать задачу",
-                            WS_VISIBLE | WS_POPUP | WS_SYSMENU | WS_CAPTION | WS_TABSTOP,
+                            WS_VISIBLE | WS_POPUP | WS_SYSMENU | WS_CAPTION,
                             x, y, width, height,
                             hwnd, NULL, (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL
                         );
