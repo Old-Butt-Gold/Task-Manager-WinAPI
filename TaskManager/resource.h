@@ -3,8 +3,6 @@
 // ������������ TaskManager.rc
 //
 #define IDI_MAINICON                    101
-#define IDI_PROCESSICON                 102
-#define IDI_GRAPHICON                   103
 
 // Next default values for new objects
 // 

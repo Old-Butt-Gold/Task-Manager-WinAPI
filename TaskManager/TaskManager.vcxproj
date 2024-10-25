@@ -138,10 +138,6 @@
   <ItemGroup>
     <Image Include="TaskMGR_Icon.ico" />
   </ItemGroup>
-  <ItemGroup>
-    <Content Include="graph.ico" />
-    <Content Include="memory.ico" />
-  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
