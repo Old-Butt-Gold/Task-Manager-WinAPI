@@ -127,9 +127,14 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="Graph.cpp" />
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="ProcessInfo.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Constants.h" />
+    <ClInclude Include="Graph.h" />
+    <ClInclude Include="ProcessInfo.h" />
     <ClInclude Include="resource.h" />
   </ItemGroup>
   <ItemGroup>
