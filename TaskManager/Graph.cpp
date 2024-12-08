@@ -51,9 +51,9 @@ std::wstring GetSystemUptime() {
     ULONGLONG days = (systemUptime / (static_cast<ULONGLONG>(60) * 1000 * 60 * 24));
 
     return L"Время работы: " + std::to_wstring(days) + L" дн. " +
-           std::to_wstring(hours) + L" ч. " +
-           std::to_wstring(minutes) + L" мин. " +
-           std::to_wstring(seconds) + L" сек.";
+        std::to_wstring(hours) + L" ч. " +
+        std::to_wstring(minutes) + L" мин. " +
+        std::to_wstring(seconds) + L" сек.";
 }
 
 std::wstring GetMemoryInfo()
@@ -81,16 +81,30 @@ std::wstring GetMemoryInfo()
         }
 
         DWORD logicalCores = sysInfo.dwNumberOfProcessors;
-
         ULONG physicalCores = 0;
-        GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &physicalCores);
-        physicalCores /= sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX);
+
+        // Используем GetLogicalProcessorInformationEx для точного подсчета физических ядер
+        DWORD bufferSize = 0;
+        GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &bufferSize);
+
+        if (bufferSize > 0) {
+            std::vector<BYTE> buffer(bufferSize);
+            if (GetLogicalProcessorInformationEx(RelationProcessorCore, reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buffer.data()), &bufferSize)) {
+                PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX info = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buffer.data());
+                while (reinterpret_cast<BYTE*>(info) < buffer.data() + bufferSize) {
+                    if (info->Relationship == RelationProcessorCore) {
+                        physicalCores++;
+                    }
+                    info = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(reinterpret_cast<BYTE*>(info) + info->Size);
+                }
+            }
+        }
 
         HKEY hKey;
         DWORD data, dataSize = sizeof(data);
-        if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, 
-                         L"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", 
-                         0, KEY_READ, &hKey) == ERROR_SUCCESS)
+        if (RegOpenKeyEx(HKEY_LOCAL_MACHINE,
+            L"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
+            0, KEY_READ, &hKey) == ERROR_SUCCESS)
         {
             RegQueryValueEx(hKey, L"~MHz", nullptr, nullptr, (LPBYTE)&data, &dataSize);
             RegCloseKey(hKey);
@@ -98,17 +112,18 @@ std::wstring GetMemoryInfo()
         else {
             data = 0;
         }
-        
+
         std::wstring result = L"Общий объем памяти: " + std::to_wstring(totalMemoryMB) + L" МБ; " +
-                              L"Свободно: " + std::to_wstring(freeMemoryMB) + L" МБ; \r\n" +
-                              L"Количество логических ядер: " + std::to_wstring(logicalCores) + L"; " +
-                              L"Количество физических ядер: " + std::to_wstring(physicalCores) + L"; \r\n" +
-                              L"Архитектура процессора: " + architecture + L"; " +
-                              L"Частота процессора: " + std::to_wstring(data) + L" МГц\r\n";
+            L"Свободно: " + std::to_wstring(freeMemoryMB) + L" МБ; \r\n" +
+            L"Количество логических ядер (потоков): " + std::to_wstring(logicalCores) + L"; " +
+            L"Количество физических ядер: " + std::to_wstring(physicalCores) + L"; \r\n" +
+            L"Архитектура процессора: " + architecture + L"; " +
+            L"Частота процессора: " + std::to_wstring(data) + L" МГц\r\n";
         return result;
     }
     return L"Ошибка получения информации о памяти";
 }
+
 
 void DrawGraph(HWND hPerfomance, std::vector<int>& history, const int maxHistory)
 {
@@ -120,9 +135,9 @@ void DrawGraph(HWND hPerfomance, std::vector<int>& history, const int maxHistory
     int height = rect.bottom - rect.top;
 
     HDC memDC = CreateCompatibleDC(hdc);
-    
+
     HBITMAP memBitmap = CreateCompatibleBitmap(hdc, width, height);
-    
+
     HBITMAP oldBitmap = (HBITMAP)SelectObject(memDC, memBitmap);
 
     HBRUSH backgroundBrush = CreateSolidBrush(RGB(30, 30, 30));
@@ -162,7 +177,7 @@ void DrawGraph(HWND hPerfomance, std::vector<int>& history, const int maxHistory
     }
 
     DeleteObject(gridPen);
-    
+
     BitBlt(hdc, 0, 0, width, height, memDC, 0, 0, SRCCOPY);
 
     SelectObject(memDC, oldBitmap);
@@ -175,6 +190,6 @@ void PushValue(std::vector<int>& history, const int maxHistory, int newValue)
 {
     history.push_back(newValue);
     if (static_cast<int>(history.size()) > maxHistory) {
-        history.erase(history.begin()); 
+        history.erase(history.begin());
     }
 }
